@@ -4,24 +4,29 @@ use chrono::{DateTime, Local};
 use humansize::{DECIMAL, format_size};
 use ratatui::{
   Frame,
-  buffer::CellDiffOption,
   layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-  style::{Color, Modifier, Style},
+  style::{Color, Style},
   text::{Line, Span, Text},
-  widgets::{Block, Borders, Clear, Paragraph, Wrap},
+  widgets::{Block, Borders, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 
 use crate::{
-  app::ConfirmDialog,
-  app::{App, DetailPage, Prompt, ViewMode},
+  app::{App, DetailPage, ViewMode},
   config::{EffectiveLayoutConfig, ThemeConfig},
-  event::{AsyncEvent, ProtocolOverlay, RenderedImage},
-  keymap::KeyHint,
+  event::{AsyncEvent, ProtocolOverlay},
   layout::{compute_browser_layout, screen_rect},
   model::ImageItem,
   render::RenderStore,
 };
+
+mod footer;
+mod image;
+mod modal;
+
+use footer::{draw_footer, footer_height};
+use image::{ImageAlignment, draw_rendered_image, fit_image_rect, image_alignment_for_layout};
+use modal::draw_confirm;
 
 pub fn draw(
   frame: &mut Frame,
@@ -49,47 +54,6 @@ pub fn draw(
     protocol_overlays.clear();
   }
   app.protocol_overlays = protocol_overlays;
-}
-
-fn footer_height(app: &App, width: u16) -> u16 {
-  let status = u16::from(status_visible(app));
-  let prompt = u16::from(app.prompt.is_some());
-  let completion = command_completion_rows(app);
-  let which = if app.hints.is_empty() {
-    0
-  } else {
-    which_key_rows_for_count(app.hints.len(), which_key_columns(app, width))
-  };
-  status
-    .saturating_add(prompt)
-    .saturating_add(completion)
-    .saturating_add(which)
-}
-
-fn command_completion_rows(app: &App) -> u16 {
-  app
-    .command_completion
-    .as_ref()
-    .filter(|completion| app.prompt.is_some() && !completion.candidates.is_empty())
-    .map(|completion| completion.candidates.len().min(5) as u16)
-    .unwrap_or(0)
-}
-
-fn status_visible(app: &App) -> bool {
-  !(app.view == ViewMode::Detail
-    && app.detail_page == DetailPage::Image
-    && app.prompt.is_none()
-    && app.hints.is_empty())
-}
-
-fn which_key_columns(app: &App, width: u16) -> usize {
-  let configured = app.settings.theme.which_key_columns.max(1) as usize;
-  let max_by_width = (usize::from(width) / 24).max(1);
-  configured.min(max_by_width).max(1)
-}
-
-fn which_key_rows_for_count(count: usize, columns: usize) -> u16 {
-  count.div_ceil(columns.max(1)).max(1) as u16
 }
 
 fn draw_browser(
@@ -149,6 +113,7 @@ fn draw_browser(
   preload_browser_neighbors(app, renderer, tx, &layout_config);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_card(
   frame: &mut Frame,
   app: &App,
@@ -193,6 +158,8 @@ fn draw_card(
     renderer,
     tx,
     item,
+    index,
+    app.images.len(),
     image_area,
     0,
     image_alignment_for_layout(layout_config),
@@ -252,6 +219,8 @@ fn draw_detail(
         renderer,
         tx,
         item,
+        app.focused,
+        app.images.len(),
         area,
         0,
         ImageAlignment::Center,
@@ -278,6 +247,8 @@ fn draw_detail(
         renderer,
         tx,
         item,
+        app.focused,
+        app.images.len(),
         preview,
         0,
         ImageAlignment::Center,
@@ -405,122 +376,6 @@ fn draw_metadata(frame: &mut Frame, app: &App, item: &ImageItem, area: Rect) {
   );
 }
 
-fn draw_rendered_image(
-  frame: &mut Frame,
-  app: &App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  item: &ImageItem,
-  area: Rect,
-  scroll: u16,
-  alignment: ImageAlignment,
-  protocol_overlays: &mut Vec<ProtocolOverlay>,
-) {
-  if area.width == 0 || area.height == 0 {
-    return;
-  }
-
-  let image_area = fit_image_rect(area, item, app, alignment);
-  if image_area.width == 0 || image_area.height == 0 {
-    return;
-  }
-
-  renderer.request(item, image_area.width, image_area.height, tx);
-  if let Some(rendered) = renderer.get(item, image_area.width, image_area.height) {
-    match rendered {
-      RenderedImage::Symbols { mode, text } => {
-        let _mode_label = mode.label();
-        frame.render_widget(Paragraph::new(text.clone()).scroll((scroll, 0)), image_area);
-      }
-      RenderedImage::Protocol {
-        mode,
-        data,
-        fingerprint,
-        erase,
-      } => {
-        let _mode_label = mode.label();
-        reserve_protocol_area(frame, image_area);
-        protocol_overlays.push(ProtocolOverlay {
-          area: image_area,
-          mode: *mode,
-          data: data.clone(),
-          fingerprint: *fingerprint,
-          erase: erase.clone(),
-        });
-      }
-    }
-  } else if let Some(error) = renderer.failure(item, image_area.width, image_area.height) {
-    frame.render_widget(
-      Paragraph::new(format!("render failed\n{error}")).wrap(Wrap { trim: true }),
-      image_area,
-    );
-  } else {
-    frame.render_widget(
-      Paragraph::new("rendering...")
-        .alignment(Alignment::Center)
-        .style(Style::default().add_modifier(Modifier::DIM)),
-      image_area,
-    );
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ImageAlignment {
-  Left,
-  Center,
-}
-
-fn image_alignment_for_layout(layout: &EffectiveLayoutConfig) -> ImageAlignment {
-  match layout.image_alignment.as_str() {
-    "left" => ImageAlignment::Left,
-    _ => ImageAlignment::Center,
-  }
-}
-
-fn fit_image_rect(area: Rect, item: &ImageItem, app: &App, alignment: ImageAlignment) -> Rect {
-  let Some((image_width, image_height)) = item.dimensions else {
-    return area;
-  };
-  if image_width == 0 || image_height == 0 || area.width == 0 || area.height == 0 {
-    return area;
-  }
-
-  let (cell_width, cell_height) = app.terminal_cell_pixels.unwrap_or((8, 16));
-  let max_pixel_width = f64::from(area.width) * f64::from(cell_width.max(1));
-  let max_pixel_height = f64::from(area.height) * f64::from(cell_height.max(1));
-  let scale = (max_pixel_width / f64::from(image_width))
-    .min(max_pixel_height / f64::from(image_height))
-    .max(0.0);
-
-  let fitted_width = ((f64::from(image_width) * scale) / f64::from(cell_width.max(1)))
-    .round()
-    .clamp(1.0, f64::from(area.width)) as u16;
-  let fitted_height = ((f64::from(image_height) * scale) / f64::from(cell_height.max(1)))
-    .round()
-    .clamp(1.0, f64::from(area.height)) as u16;
-
-  Rect {
-    x: match alignment {
-      ImageAlignment::Left => area.x,
-      ImageAlignment::Center => area.x + area.width.saturating_sub(fitted_width) / 2,
-    },
-    y: area.y + area.height.saturating_sub(fitted_height) / 2,
-    width: fitted_width,
-    height: fitted_height,
-  }
-}
-
-fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
-  let buf = frame.buffer_mut();
-  for y in area.y..area.y.saturating_add(area.height) {
-    for x in area.x..area.x.saturating_add(area.width) {
-      if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.set_diff_option(CellDiffOption::Skip);
-      }
-    }
-  }
-}
-
 fn clear_clipped_card_edges(
   frame: &mut Frame,
   app: &App,
@@ -565,321 +420,6 @@ fn draw_label(frame: &mut Frame, label: &str, area: Rect, style: Style) {
     Paragraph::new(text).style(style).wrap(Wrap { trim: false }),
     area,
   );
-}
-
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-  if area.height == 0 {
-    return;
-  }
-  let theme = &app.settings.theme;
-  let status_height = u16::from(status_visible(app));
-  let status_area = if status_height == 1 {
-    Some(Rect::new(
-      area.x,
-      area.y + area.height.saturating_sub(1),
-      area.width,
-      1,
-    ))
-  } else {
-    None
-  };
-  let mut content_bottom = area
-    .y
-    .saturating_add(area.height.saturating_sub(status_height));
-
-  if let Some(prompt) = &app.prompt
-    && content_bottom > area.y
-  {
-    content_bottom = content_bottom.saturating_sub(1);
-    let prompt_area = Rect::new(area.x, content_bottom, area.width, 1);
-    draw_prompt(frame, app, prompt, prompt_area);
-  }
-
-  let completion_rows = command_completion_rows(app);
-  if completion_rows > 0 && content_bottom > area.y {
-    let height = completion_rows.min(content_bottom - area.y);
-    content_bottom = content_bottom.saturating_sub(height);
-    let completion_area = Rect::new(area.x, content_bottom, area.width, height);
-    draw_command_completion(frame, app, completion_area);
-  }
-
-  if !app.hints.is_empty() && area.y < content_bottom {
-    let which_area = Rect::new(area.x, area.y, area.width, content_bottom - area.y);
-    draw_which_key(frame, app, which_area);
-  }
-
-  if let Some(status_area) = status_area {
-    draw_status(frame, app, status_area);
-  } else {
-    frame.render_widget(
-      Block::default().style(Style::default().bg(theme.color(&theme.background))),
-      area,
-    );
-  }
-}
-
-fn draw_prompt(frame: &mut Frame, app: &App, prompt: &Prompt, area: Rect) {
-  let theme = &app.settings.theme;
-  let style = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.background));
-  let mut spans = vec![
-    Span::styled(prompt_prefix(prompt), style.fg(theme.color(&theme.accent))),
-    Span::styled(prompt_input(prompt), style),
-  ];
-  if matches!(prompt, Prompt::Command { .. })
-    && prompt.buffer().cursor == prompt.buffer().input.len()
-    && let Some(completion) = &app.command_completion
-  {
-    let suggestion = completion.suggestion_suffix();
-    if !suggestion.is_empty() {
-      spans.push(Span::styled(
-        suggestion,
-        style.fg(theme.color(&theme.muted)),
-      ));
-    }
-  }
-  frame.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
-  let input_width = prompt.buffer().cursor_columns() as u16;
-  let prefix_width = prompt_prefix(prompt).chars().count() as u16;
-  let cursor_x = prefix_width
-    .saturating_add(input_width)
-    .min(area.width.saturating_sub(1));
-  frame.set_cursor_position((area.x.saturating_add(cursor_x), area.y));
-}
-
-fn draw_command_completion(frame: &mut Frame, app: &App, area: Rect) {
-  let Some(completion) = &app.command_completion else {
-    return;
-  };
-  if completion.candidates.is_empty() || area.height == 0 {
-    return;
-  }
-
-  let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.which_key_foreground))
-    .bg(theme.color(&theme.which_key_background));
-  frame.render_widget(Block::default().style(base), area);
-
-  let visible = area.height as usize;
-  let selected = completion.selected.min(completion.candidates.len() - 1);
-  let start = selected.saturating_sub(visible.saturating_sub(1));
-  let mut lines = Vec::with_capacity(visible);
-  for row in 0..visible {
-    let index = start + row;
-    let Some(candidate) = completion.candidates.get(index) else {
-      lines.push(Line::from(Span::styled(
-        " ".repeat(area.width as usize),
-        base,
-      )));
-      continue;
-    };
-    let selected_row = index == selected;
-    let style = if selected_row {
-      Style::default()
-        .fg(Color::Black)
-        .bg(Color::White)
-        .add_modifier(Modifier::BOLD)
-    } else {
-      base.fg(theme.color(&theme.which_key_foreground))
-    };
-    let marker = if selected_row { "> " } else { "  " };
-    let mut text = format!("{marker}{candidate}");
-    text = truncate_for_width(&text, area.width as usize);
-    let used = text.chars().count();
-    if used < area.width as usize {
-      text.push_str(&" ".repeat(area.width as usize - used));
-    }
-    lines.push(Line::from(Span::styled(text, style)));
-  }
-
-  frame.render_widget(Paragraph::new(Text::from(lines)).style(base), area);
-}
-
-fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
-  if area.width == 0 || area.height == 0 {
-    return;
-  }
-
-  let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.which_key_foreground))
-    .bg(theme.color(&theme.which_key_background));
-  frame.render_widget(Block::default().style(base), area);
-
-  let columns = which_key_columns(app, area.width);
-  let rows = which_key_rows_for_count(app.hints.len(), columns).min(area.height);
-  let cell_width = (area.width as usize / columns.max(1)).max(1);
-  let mut lines = Vec::with_capacity(rows as usize);
-  for row in 0..rows as usize {
-    let mut spans = Vec::new();
-    for col in 0..columns {
-      let index = row * columns + col;
-      if let Some(hint) = app.hints.get(index) {
-        push_which_key_cell(&mut spans, hint, cell_width, app);
-      } else if col + 1 < columns {
-        spans.push(Span::styled(" ".repeat(cell_width), base));
-      }
-    }
-    lines.push(Line::from(spans));
-  }
-
-  frame.render_widget(Paragraph::new(Text::from(lines)).style(base), area);
-}
-
-fn push_which_key_cell(
-  spans: &mut Vec<Span<'static>>,
-  hint: &KeyHint,
-  cell_width: usize,
-  app: &App,
-) {
-  let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.which_key_foreground))
-    .bg(theme.color(&theme.which_key_background));
-  let key_style = base
-    .fg(theme.color(&theme.which_key_key))
-    .add_modifier(Modifier::BOLD);
-  let separator_style = base.fg(theme.color(&theme.which_key_separator_color));
-  let desc_style = base.fg(theme.color(&theme.which_key_description));
-
-  let key = truncate_for_width(&hint.key, cell_width);
-  let key_width = key.chars().count();
-  spans.push(Span::styled(key, key_style));
-
-  let mut used = key_width;
-  if used < cell_width {
-    let separator = truncate_for_width(&theme.which_key_separator, cell_width - used);
-    used += separator.chars().count();
-    spans.push(Span::styled(separator, separator_style));
-  }
-  if used < cell_width {
-    let desc = truncate_for_width(&hint.label, cell_width - used);
-    used += desc.chars().count();
-    spans.push(Span::styled(desc, desc_style));
-  }
-  if used < cell_width {
-    spans.push(Span::styled(" ".repeat(cell_width - used), base));
-  }
-}
-
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-  let theme = &app.settings.theme;
-  let style = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.background));
-  frame.render_widget(
-    Paragraph::new(Line::from(vec![
-      Span::styled(
-        match app.view {
-          ViewMode::Browser => "browser",
-          ViewMode::Detail => detail_label(app.detail_page),
-        },
-        style.fg(theme.color(&theme.accent)),
-      ),
-      Span::styled(
-        format!(
-          "  {}/{}  selected:{}  sort:{}  {}",
-          if app.images.is_empty() {
-            0
-          } else {
-            app.focused + 1
-          },
-          app.images.len(),
-          app.selected.len(),
-          app.sort_spec.label(),
-          app.message
-        ),
-        style,
-      ),
-    ]))
-    .style(style),
-    area,
-  );
-}
-
-fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
-  let Some(confirm) = &app.confirm else {
-    return;
-  };
-  if area.width < 20 || area.height < 6 {
-    return;
-  }
-  let theme = &app.settings.theme;
-  let available_width = area.width.saturating_sub(4).max(1);
-  let width = available_width.min(96).max(available_width.min(40));
-  let height = area.height.saturating_sub(2).min(12).max(6);
-  let popup = Rect::new(
-    area.x + area.width.saturating_sub(width) / 2,
-    area.y + area.height.saturating_sub(height) / 2,
-    width,
-    height,
-  );
-  let style = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.which_key_background));
-  frame.render_widget(Clear, popup);
-  frame.render_widget(Block::default().style(style), popup);
-  let text = match confirm {
-    ConfirmDialog::MetadataWrite { path, edit } => {
-      let mut lines = vec![
-        Line::from(Span::styled(
-          "Apply metadata changes?",
-          style
-            .fg(theme.color(&theme.accent))
-            .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-          format!(
-            "{} change(s): {}",
-            edit.change_count(),
-            display_file_name(path)
-          ),
-          style,
-        )),
-      ];
-      if let Some(change) = &edit.file_name {
-        lines.push(Line::from(Span::styled(
-          format!("filename: {}", change.new_value),
-          style,
-        )));
-      }
-      for change in edit.tags.iter().take(4) {
-        lines.push(Line::from(Span::styled(
-          format!("{}: {}", change.tag, change.new_value),
-          style,
-        )));
-      }
-      if edit.tags.len() > 4 {
-        lines.push(Line::from(Span::styled("...", style)));
-      }
-      lines.push(Line::from(Span::styled(
-        "y apply    Enter/n/esc cancel",
-        style.fg(theme.color(&theme.muted)),
-      )));
-      Text::from(lines)
-    }
-  };
-  frame.render_widget(
-    Paragraph::new(text)
-      .block(
-        Block::default()
-          .borders(Borders::ALL)
-          .title("confirm")
-          .border_style(style),
-      )
-      .style(style)
-      .wrap(Wrap { trim: true }),
-    popup,
-  );
-}
-
-fn display_file_name(path: &std::path::Path) -> String {
-  path
-    .file_name()
-    .map(|name| name.to_string_lossy().into_owned())
-    .unwrap_or_else(|| path.display().to_string())
 }
 
 fn split_card_content(area: Rect, layout: &EffectiveLayoutConfig) -> (Rect, Option<Rect>) {
@@ -1015,24 +555,6 @@ fn format_time(value: Option<SystemTime>) -> String {
       datetime.format("%Y-%m-%d %H:%M:%S").to_string()
     })
     .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn detail_label(page: DetailPage) -> &'static str {
-  match page {
-    DetailPage::Image => "image",
-    DetailPage::Metadata => "metadata",
-  }
-}
-
-fn prompt_prefix(prompt: &Prompt) -> &'static str {
-  match prompt {
-    Prompt::Rename { .. } => "rename: ",
-    Prompt::Command { .. } => ":",
-  }
-}
-
-fn prompt_input(prompt: &Prompt) -> String {
-  prompt.buffer().input.clone()
 }
 
 fn truncate_for_width(value: &str, width: usize) -> String {

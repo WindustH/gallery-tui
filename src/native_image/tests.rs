@@ -16,3 +16,10 @@ fn kitty_erase_can_target_single_image_id() {
 
   assert!(erase.contains("a=d,d=i,i=42"));
 }
+
+#[test]
+fn kitty_erase_can_reset_all_images() {
+  let erase = erase_sequence(RenderMode::Kitty, None, None).unwrap();
+
+  assert!(erase.contains("a=d,d=A"));
+}

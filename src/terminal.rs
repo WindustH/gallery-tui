@@ -14,6 +14,7 @@ use crate::{capability::RenderMode, event::ProtocolOverlay};
 pub struct Tui {
   terminal: Terminal<CrosstermBackend<Stderr>>,
   protocol_state: Vec<ProtocolOverlayState>,
+  protocol_reset: Option<String>,
   suspended: bool,
   restored: bool,
 }
@@ -27,15 +28,17 @@ struct ProtocolOverlayState {
 }
 
 impl Tui {
-  pub fn new() -> Result<Self> {
+  pub fn new(protocol_reset: Option<String>) -> Result<Self> {
     enable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stderr);
-    let terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)?;
+    reset_protocol_images(terminal.backend_mut(), protocol_reset.as_deref())?;
     Ok(Self {
       terminal,
       protocol_state: Vec::new(),
+      protocol_reset,
       suspended: false,
       restored: false,
     })
@@ -122,7 +125,9 @@ impl Tui {
       return Ok(());
     }
     let old_state = std::mem::take(&mut self.protocol_state);
-    erase_protocol_state(self.terminal.backend_mut(), &old_state)?;
+    let backend = self.terminal.backend_mut();
+    erase_protocol_state(backend, &old_state)?;
+    reset_protocol_images(backend, self.protocol_reset.as_deref())?;
     disable_raw_mode()?;
     self.terminal.show_cursor()?;
     if !self.suspended {
@@ -142,7 +147,9 @@ impl Tui {
       return Ok(());
     }
     let old_state = std::mem::take(&mut self.protocol_state);
-    erase_protocol_state(self.terminal.backend_mut(), &old_state)?;
+    let backend = self.terminal.backend_mut();
+    erase_protocol_state(backend, &old_state)?;
+    reset_protocol_images(backend, self.protocol_reset.as_deref())?;
     disable_raw_mode()?;
     self.terminal.show_cursor()?;
     execute!(
@@ -165,9 +172,24 @@ impl Tui {
       EnableMouseCapture
     )?;
     self.terminal.clear()?;
+    reset_protocol_images(self.terminal.backend_mut(), self.protocol_reset.as_deref())?;
     self.suspended = false;
     Ok(())
   }
+}
+
+fn reset_protocol_images(
+  backend: &mut CrosstermBackend<Stderr>,
+  sequence: Option<&str>,
+) -> Result<()> {
+  let Some(sequence) = sequence else {
+    return Ok(());
+  };
+  execute!(backend, SavePosition)?;
+  backend.write_all(sequence.as_bytes())?;
+  execute!(backend, RestorePosition)?;
+  backend.flush()?;
+  Ok(())
 }
 
 fn erase_protocol_state(

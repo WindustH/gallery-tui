@@ -111,17 +111,28 @@ async fn main() -> Result<()> {
 
   let mut app = App::new(root, settings, images);
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
+  let native_config = NativeImageConfig {
+    cell_pixels: terminal_capability.cell_pixels,
+    passthrough: terminal_capability.passthrough().map(str::to_string),
+  };
+  let protocol_reset = render_modes
+    .contains(&RenderMode::Kitty)
+    .then(|| {
+      native_image::erase_sequence(
+        RenderMode::Kitty,
+        native_config.passthrough.as_deref(),
+        None,
+      )
+    })
+    .flatten();
   let mut renderer = RenderStore::new(
     app.settings.cache_dir.clone(),
     effective_render,
-    NativeImageConfig {
-      cell_pixels: terminal_capability.cell_pixels,
-      passthrough: terminal_capability.passthrough().map(str::to_string),
-    },
+    native_config,
     render_modes,
   );
 
-  let mut tui = Tui::new()?;
+  let mut tui = Tui::new(protocol_reset)?;
   loop {
     if app.confirm.is_some() {
       tui.clear_protocol_overlays()?;

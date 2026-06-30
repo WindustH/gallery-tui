@@ -3,7 +3,7 @@
 `gallery-tui` is a terminal image gallery built with Ratatui. It scans an image
 folder and displays the images as navigable cards in a TUI.
 
-![gallery-tui demo](https://github.com/WindustH/gallery-tui/releases/download/v0.1.0/demo.png)
+![gallery-tui demo](https://media.githubusercontent.com/media/WindustH/gallery-tui-assets/master/demo.png)
 
 ## Features
 
@@ -31,6 +31,19 @@ be piped:
 
 ```sh
 gallery-tui ~/Pictures | other-tool
+```
+
+## Installation
+
+```sh
+brew install WindustH/tap/gallery-tui
+```
+
+The Homebrew stable formula downloads a prebuilt release binary. To build the
+latest git version from source:
+
+```sh
+brew install --HEAD WindustH/tap/gallery-tui
 ```
 
 ## Documentation

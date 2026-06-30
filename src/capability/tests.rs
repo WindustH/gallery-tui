@@ -70,3 +70,31 @@ fn zellij_capability(probe_sixel: bool) -> TerminalCapability {
 fn parses_cell_pixel_size_response() {
   assert_eq!(csi_16t("\x1b[6;18;9t\x1b[?1;2c"), Some((9, 18)));
 }
+
+#[test]
+fn probe_completion_waits_for_all_requested_responses() {
+  let requests = ProbeRequests {
+    kitty_graphics: false,
+    terminal_version: true,
+    cell_pixels: true,
+    da1: true,
+  };
+
+  let early_da1 = b"\x1b[?62;52;c";
+  assert!(!probe_responses_complete(early_da1, requests));
+
+  let complete = b"\x1b[?62;52;c\x1bP>|kitty(0.47.4)\x1b\\\x1b[6;45;21t";
+  assert!(probe_responses_complete(complete, requests));
+}
+
+#[test]
+fn cell_pixel_only_probe_does_not_require_identity_responses() {
+  let requests = ProbeRequests {
+    kitty_graphics: false,
+    terminal_version: false,
+    cell_pixels: true,
+    da1: false,
+  };
+
+  assert!(probe_responses_complete(b"\x1b[6;45;21t", requests));
+}

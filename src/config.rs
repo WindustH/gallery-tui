@@ -1,5 +1,6 @@
 use std::{
   collections::BTreeMap,
+  env,
   fmt::Write as FmtWrite,
   path::{Path, PathBuf},
 };
@@ -947,12 +948,8 @@ fn default_hover_selected_background() -> String {
 }
 
 pub async fn load_or_create() -> Result<Settings> {
-  let config_dir = dirs::config_dir()
-    .unwrap_or_else(|| PathBuf::from("."))
-    .join("gallery-tui");
-  let cache_dir = dirs::cache_dir()
-    .unwrap_or_else(|| PathBuf::from(".cache"))
-    .join("gallery-tui");
+  let config_dir = app_config_dir();
+  let cache_dir = app_cache_dir();
 
   fs::create_dir_all(&config_dir)
     .await
@@ -974,6 +971,68 @@ pub async fn load_or_create() -> Result<Settings> {
     config_path,
     cache_dir,
   })
+}
+
+fn app_config_dir() -> PathBuf {
+  platform_config_dir().join("gallery-tui")
+}
+
+fn app_cache_dir() -> PathBuf {
+  platform_cache_dir().join("gallery-tui")
+}
+
+#[cfg(unix)]
+fn platform_config_dir() -> PathBuf {
+  unix_platform_dir(
+    env_path("XDG_CONFIG_HOME"),
+    dirs::home_dir(),
+    dirs::config_dir(),
+    ".config",
+    ".",
+  )
+}
+
+#[cfg(not(unix))]
+fn platform_config_dir() -> PathBuf {
+  dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(unix)]
+fn platform_cache_dir() -> PathBuf {
+  unix_platform_dir(
+    env_path("XDG_CACHE_HOME"),
+    dirs::home_dir(),
+    dirs::cache_dir(),
+    ".cache",
+    ".cache",
+  )
+}
+
+#[cfg(not(unix))]
+fn platform_cache_dir() -> PathBuf {
+  dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"))
+}
+
+#[cfg(unix)]
+fn env_path(name: &str) -> Option<PathBuf> {
+  env::var_os(name)
+    .filter(|value| !value.is_empty())
+    .map(PathBuf::from)
+}
+
+#[cfg(unix)]
+fn unix_platform_dir(
+  xdg_dir: Option<PathBuf>,
+  home_dir: Option<PathBuf>,
+  fallback_dir: Option<PathBuf>,
+  home_child: &str,
+  default_dir: &str,
+) -> PathBuf {
+  xdg_dir
+    .filter(|path| !path.as_os_str().is_empty())
+    .or_else(|| home_dir.map(|home| home.join(home_child)))
+    .or(fallback_dir)
+    .unwrap_or_else(|| PathBuf::from(default_dir))
 }
 
 pub async fn write_app_config(path: &Path, config: &AppConfig) -> Result<()> {

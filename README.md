@@ -35,6 +35,21 @@ gallery-tui ~/Pictures | other-tool
 
 ## Installation
 
+Arch Linux AUR:
+
+```sh
+yay -S gallery-tui-bin
+```
+
+Alternative AUR packages:
+
+```sh
+yay -S gallery-tui      # build the latest stable release from source
+yay -S gallery-tui-git  # build the latest git version from source
+```
+
+Homebrew:
+
 ```sh
 brew install WindustH/tap/gallery-tui
 ```

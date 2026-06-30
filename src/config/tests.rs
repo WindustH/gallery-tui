@@ -36,6 +36,56 @@ fn default_app_config_toml_round_trips() {
   assert_eq!(layout.padding, 1);
 }
 
+#[cfg(unix)]
+#[test]
+fn unix_config_dir_prefers_xdg_then_home() {
+  assert_eq!(
+    unix_platform_dir(
+      Some(PathBuf::from("/tmp/xdg-config")),
+      Some(PathBuf::from("/tmp/home")),
+      Some(PathBuf::from("/tmp/fallback")),
+      ".config",
+      ".",
+    ),
+    PathBuf::from("/tmp/xdg-config")
+  );
+  assert_eq!(
+    unix_platform_dir(
+      None,
+      Some(PathBuf::from("/tmp/home")),
+      Some(PathBuf::from("/tmp/fallback")),
+      ".config",
+      ".",
+    ),
+    PathBuf::from("/tmp/home/.config")
+  );
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_cache_dir_prefers_xdg_then_home() {
+  assert_eq!(
+    unix_platform_dir(
+      Some(PathBuf::from("/tmp/xdg-cache")),
+      Some(PathBuf::from("/tmp/home")),
+      Some(PathBuf::from("/tmp/fallback")),
+      ".cache",
+      ".cache",
+    ),
+    PathBuf::from("/tmp/xdg-cache")
+  );
+  assert_eq!(
+    unix_platform_dir(
+      None,
+      Some(PathBuf::from("/tmp/home")),
+      Some(PathBuf::from("/tmp/fallback")),
+      ".cache",
+      ".cache",
+    ),
+    PathBuf::from("/tmp/home/.cache")
+  );
+}
+
 #[test]
 fn default_theme_uses_plain_selected_colors() {
   let theme = ThemeConfig::default();

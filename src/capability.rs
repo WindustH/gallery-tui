@@ -98,6 +98,14 @@ pub enum ColorLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProbeRequests {
+  kitty_graphics: bool,
+  terminal_version: bool,
+  cell_pixels: bool,
+  da1: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalBrand {
   Kitty,
   Konsole,
@@ -214,8 +222,14 @@ pub fn detect() -> TerminalCapability {
   let colorterm = env::var("COLORTERM").ok();
   let multiplexer = detect_multiplexer();
   let env_brand = detect_brand_from_env(term.as_deref(), term_program.as_deref());
-  let include_kitty_query = env_brand.is_none() && multiplexer.as_deref() != Some("zellij");
-  let mut active_probe = probe_terminal(multiplexer.as_deref(), include_kitty_query);
+  let needs_identity_probe = env_brand.is_none() && multiplexer.as_deref() != Some("zellij");
+  let requests = ProbeRequests {
+    kitty_graphics: needs_identity_probe,
+    terminal_version: needs_identity_probe,
+    cell_pixels: true,
+    da1: env_brand.is_none() || multiplexer.as_deref() == Some("zellij"),
+  };
+  let mut active_probe = probe_terminal(multiplexer.as_deref(), requests);
   if active_probe.summary.cell_pixels.is_none() {
     active_probe.summary.cell_pixels = detect_window_cell_pixels();
   }
@@ -283,8 +297,8 @@ struct ActiveProbe {
   brand: Option<TerminalBrand>,
 }
 
-fn probe_terminal(multiplexer: Option<&str>, include_kitty_query: bool) -> ActiveProbe {
-  match query_terminal(multiplexer, include_kitty_query) {
+fn probe_terminal(multiplexer: Option<&str>, requests: ProbeRequests) -> ActiveProbe {
+  match query_terminal(multiplexer, requests) {
     Ok(response) => {
       let brand = detect_brand_from_response(&response);
       let summary = TerminalProbe {
@@ -310,15 +324,15 @@ fn probe_terminal(multiplexer: Option<&str>, include_kitty_query: bool) -> Activ
 }
 
 #[cfg(unix)]
-fn query_terminal(multiplexer: Option<&str>, include_kitty_query: bool) -> Result<String, String> {
+fn query_terminal(multiplexer: Option<&str>, requests: ProbeRequests) -> Result<String, String> {
   const KITTY_GRAPHICS_QUERY: &str = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
   const REQUEST_XT_VERSION: &str = "\x1b[>q";
   const REQUEST_CELL_PIXEL_SIZE: &str = "\x1b[16t";
-  const REQUEST_BG_COLOR: &str = "\x1b]11;?\x07";
   const REQUEST_DA1: &str = "\x1b[0c";
   const SAVE_CURSOR: &str = "\x1b[s";
   const RESTORE_CURSOR: &str = "\x1b[u";
   const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+  const PROBE_QUIET_TIMEOUT: Duration = Duration::from_millis(120);
 
   let mut tty = OpenOptions::new()
     .read(true)
@@ -330,29 +344,32 @@ fn query_terminal(multiplexer: Option<&str>, include_kitty_query: bool) -> Resul
 
   let mut request = String::new();
   request.push_str(SAVE_CURSOR);
-  if include_kitty_query {
+  if requests.kitty_graphics {
     request.push_str(&wrap_probe_sequence(KITTY_GRAPHICS_QUERY, multiplexer));
   }
-  request.push_str(&wrap_probe_sequence(REQUEST_XT_VERSION, multiplexer));
-  request.push_str(REQUEST_CELL_PIXEL_SIZE);
-  request.push_str(REQUEST_BG_COLOR);
-  request.push_str(&wrap_probe_sequence(REQUEST_DA1, multiplexer));
+  if requests.terminal_version {
+    request.push_str(&wrap_probe_sequence(REQUEST_XT_VERSION, multiplexer));
+  }
+  if requests.cell_pixels {
+    request.push_str(REQUEST_CELL_PIXEL_SIZE);
+  }
+  if requests.da1 {
+    request.push_str(&wrap_probe_sequence(REQUEST_DA1, multiplexer));
+  }
   request.push_str(RESTORE_CURSOR);
   tty
     .write_all(request.as_bytes())
     .and_then(|_| tty.flush())
     .map_err(|err| format!("failed to write terminal probe: {err}"))?;
 
-  let bytes = read_until_da1(&mut tty, PROBE_TIMEOUT)
+  let bytes = read_probe_responses(&mut tty, requests, PROBE_TIMEOUT, PROBE_QUIET_TIMEOUT)
     .map_err(|err| format!("failed to read terminal probe response: {err}"))?;
+  flush_terminal_input(tty.as_raw_fd());
   Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(not(unix))]
-fn query_terminal(
-  _multiplexer: Option<&str>,
-  _include_kitty_query: bool,
-) -> Result<String, String> {
+fn query_terminal(_multiplexer: Option<&str>, _requests: ProbeRequests) -> Result<String, String> {
   Err("active terminal probing is only implemented on Unix".to_string())
 }
 
@@ -368,10 +385,25 @@ fn wrap_probe_sequence(sequence: &str, multiplexer: Option<&str>) -> String {
 }
 
 #[cfg(unix)]
-fn read_until_da1(tty: &mut File, timeout: Duration) -> std::io::Result<Vec<u8>> {
+fn read_probe_responses(
+  tty: &mut File,
+  requests: ProbeRequests,
+  timeout: Duration,
+  quiet_timeout: Duration,
+) -> std::io::Result<Vec<u8>> {
   let started = Instant::now();
+  let mut last_byte_at = None;
   let mut buf = Vec::with_capacity(256);
   while started.elapsed() < timeout {
+    if probe_responses_complete(&buf, requests) {
+      break;
+    }
+    let probe_went_quiet =
+      last_byte_at.is_some_and(|last: Instant| last.elapsed() >= quiet_timeout);
+    if !buf.is_empty() && probe_went_quiet {
+      break;
+    }
+
     let remaining = timeout.saturating_sub(started.elapsed());
     let poll_timeout = remaining.min(Duration::from_millis(30));
     if !poll_readable(tty.as_raw_fd(), poll_timeout)? {
@@ -383,15 +415,23 @@ fn read_until_da1(tty: &mut File, timeout: Duration) -> std::io::Result<Vec<u8>>
       Ok(0) => break,
       Ok(_) => {
         buf.push(byte[0]);
-        if is_da1_response_end(byte[0], &buf) {
-          break;
-        }
+        last_byte_at = Some(Instant::now());
       }
       Err(err) if err.kind() == ErrorKind::Interrupted => continue,
       Err(err) => return Err(err),
     }
   }
   Ok(buf)
+}
+
+#[cfg(unix)]
+fn flush_terminal_input(fd: RawFd) {
+  if unsafe { libc::tcflush(fd, libc::TCIFLUSH) } == -1 {
+    warn!(
+      error = %std::io::Error::last_os_error(),
+      "failed to flush terminal input after probe"
+    );
+  }
 }
 
 #[cfg(unix)]
@@ -459,6 +499,45 @@ fn is_da1_response_end(byte: u8, buf: &[u8]) -> bool {
       .rsplitn(2, |candidate| *candidate == 0x1b)
       .next()
       .is_some_and(|tail| tail.starts_with(b"[?"))
+}
+
+fn probe_responses_complete(buf: &[u8], requests: ProbeRequests) -> bool {
+  let response = String::from_utf8_lossy(buf);
+  (!requests.kitty_graphics || has_kitty_graphics_response(buf))
+    && (!requests.terminal_version || has_xt_version_response(buf))
+    && (!requests.cell_pixels || csi_16t(&response).is_some())
+    && (!requests.da1 || has_da1_response(buf))
+}
+
+fn has_kitty_graphics_response(buf: &[u8]) -> bool {
+  terminated_after(buf, b"\x1b_Gi=31", b"\x1b\\")
+}
+
+fn has_xt_version_response(buf: &[u8]) -> bool {
+  terminated_after(buf, b"\x1bP>|", b"\x1b\\")
+}
+
+fn has_da1_response(buf: &[u8]) -> bool {
+  buf
+    .iter()
+    .enumerate()
+    .any(|(index, byte)| is_da1_response_end(*byte, &buf[..=index]))
+}
+
+fn terminated_after(buf: &[u8], start: &[u8], terminator: &[u8]) -> bool {
+  let Some(start_index) = find_subslice(buf, start) else {
+    return false;
+  };
+  find_subslice(&buf[start_index + start.len()..], terminator).is_some()
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+  if needle.is_empty() {
+    return Some(0);
+  }
+  haystack
+    .windows(needle.len())
+    .position(|candidate| candidate == needle)
 }
 
 fn supports_kitty_graphics(response: &str) -> bool {

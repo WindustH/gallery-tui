@@ -3,6 +3,8 @@
 `gallery-tui` is a terminal image gallery built with Ratatui. It scans an image
 folder and displays the images as navigable cards in a TUI.
 
+![gallery-tui demo](https://github.com/WindustH/gallery-tui/releases/download/v0.1.0/demo.png)
+
 ## Features
 
 - Scrollable image-card gallery with keyboard and mouse focus navigation.

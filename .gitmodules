@@ -1,0 +1,6 @@
+[submodule "pkgbuild/release"]
+	path = pkgbuild/release
+	url = https://aur.archlinux.org/gallery-tui.git
+[submodule "pkgbuild/git"]
+	path = pkgbuild/git
+	url = https://aur.archlinux.org/gallery-tui-git.git

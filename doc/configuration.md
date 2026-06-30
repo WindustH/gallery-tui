@@ -30,6 +30,7 @@ Layout has one active preset plus shared card style fields:
 - `image_ratio`: proportion of card content reserved for the image, from `0.1` to `0.95`
 - `label_lines`: fixed filename line count for top/bottom labels; `0` uses `image_ratio`
 - `show_border`: show or hide card borders
+- `padding`: content padding inside cards; in bordered cards this is applied inside the border
 - `presets`: named layouts available to `:layout`
 
 Each preset has a `strategy` and a `params` list. `params` defines which
@@ -80,6 +81,7 @@ Supported preset fields:
 - `image_ratio`: optional preset-specific image/text space ratio override
 - `label_lines`: optional preset-specific fixed top/bottom filename height
 - `show_border`: optional preset-specific border override
+- `padding`: optional preset-specific content padding override
 
 When existing configuration files are missing fields introduced by a newer
 version, gallery-tui writes the parsed defaults back into the file.

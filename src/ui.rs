@@ -586,9 +586,10 @@ fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 }
 
 fn card_inner_area(area: Rect, layout: &EffectiveLayoutConfig) -> Rect {
-  if layout.show_border {
+  let area = if layout.show_border {
     safe_inner(area, 1, 1)
   } else {
     area
-  }
+  };
+  safe_inner(area, layout.padding, layout.padding)
 }

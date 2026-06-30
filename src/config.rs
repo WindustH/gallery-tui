@@ -86,6 +86,8 @@ pub struct LayoutConfig {
   pub label_lines: u16,
   #[serde(default = "default_show_border")]
   pub show_border: bool,
+  #[serde(default = "default_padding")]
+  pub padding: u16,
   #[serde(default = "default_layout_presets")]
   pub presets: BTreeMap<String, LayoutPresetConfig>,
 }
@@ -104,6 +106,7 @@ impl Default for LayoutConfig {
       image_ratio: default_image_ratio(),
       label_lines: default_label_lines(),
       show_border: default_show_border(),
+      padding: default_padding(),
       presets: default_layout_presets(),
     }
   }
@@ -131,6 +134,7 @@ pub struct LayoutPresetConfig {
   pub image_ratio: Option<f32>,
   pub label_lines: Option<u16>,
   pub show_border: Option<bool>,
+  pub padding: Option<u16>,
 }
 
 impl LayoutPresetConfig {
@@ -195,6 +199,7 @@ impl Default for LayoutPresetConfig {
       image_ratio: None,
       label_lines: None,
       show_border: None,
+      padding: None,
     }
   }
 }
@@ -243,6 +248,10 @@ fn default_show_border() -> bool {
   true
 }
 
+fn default_padding() -> u16 {
+  1
+}
+
 fn default_layout_strategy() -> String {
   "grid".to_string()
 }
@@ -281,6 +290,7 @@ pub struct EffectiveLayoutConfig {
   pub image_ratio: f32,
   pub label_lines: u16,
   pub show_border: bool,
+  pub padding: u16,
 }
 
 impl EffectiveLayoutConfig {
@@ -375,6 +385,7 @@ impl LayoutConfig {
       image_ratio: preset.image_ratio.unwrap_or(self.image_ratio),
       label_lines: preset.label_lines.unwrap_or(self.label_lines),
       show_border: preset.show_border.unwrap_or(self.show_border),
+      padding: preset.padding.unwrap_or(self.padding),
     };
 
     for (param, value) in preset.params.iter().zip(raw_args) {
@@ -415,6 +426,9 @@ impl LayoutPresetConfig {
     if self.show_border.is_none() {
       self.show_border = default.show_border;
     }
+    if self.padding.is_none() {
+      self.padding = default.padding;
+    }
   }
 }
 
@@ -437,6 +451,7 @@ fn default_effective_layout(config: &LayoutConfig) -> EffectiveLayoutConfig {
     image_ratio: config.image_ratio,
     label_lines: config.label_lines,
     show_border: config.show_border,
+    padding: config.padding,
   };
   normalize_effective_layout(&mut effective);
   effective
@@ -546,6 +561,7 @@ fn apply_layout_param(
     "show_border" | "show-border" | "border" | "borders" => {
       layout.show_border = parse_layout_bool(param, value)?
     }
+    "padding" | "pad" => layout.padding = parse_layout_u16(param, value)?,
     "show_filename" | "show-filename" | "name" => {
       layout.show_filename = parse_layout_bool(param, value)?
     }
@@ -721,6 +737,7 @@ impl Default for KeymapConfig {
           key("home", "home", "Go to first image"),
           key("end", "end", "Go to last image"),
           key("space", "toggle_select", "Toggle selection"),
+          key("esc", "clear_selection", "Clear selection"),
           key(["c", "p"], "copy_paths", "Output selected paths"),
           key(["s", "n"], "sort name asc", "Sort by name ascending"),
           key(["s", "N"], "sort name desc", "Sort by name descending"),

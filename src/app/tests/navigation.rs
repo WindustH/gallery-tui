@@ -24,6 +24,24 @@ fn q_returns_from_detail_without_quitting() {
 }
 
 #[test]
+fn esc_clears_selection_in_browser() {
+  let (tx, _rx) = mpsc::unbounded_channel();
+  let mut app = test_app();
+  app.images = vec![image("a.png"), image("b.png")];
+  app.selected.insert(app.images[0].path.clone());
+  app.selected.insert(app.images[1].path.clone());
+
+  app.handle_input(
+    Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+    &tx,
+  );
+
+  assert!(app.selected.is_empty());
+  assert!(!app.should_quit());
+  assert_eq!(app.message, "cleared 2 selected image(s)");
+}
+
+#[test]
 fn mouse_click_focuses_browser_card() {
   let (tx, _rx) = mpsc::unbounded_channel();
   let mut app = test_app();

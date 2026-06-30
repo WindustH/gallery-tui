@@ -33,6 +33,7 @@ fn default_app_config_toml_round_trips() {
   assert_eq!(layout.columns, 3);
   assert_eq!(layout.rows, 2);
   assert_eq!(layout.label_lines, 1);
+  assert_eq!(layout.padding, 1);
 }
 
 #[test]
@@ -143,4 +144,24 @@ fn layout_command_uses_preset_parameter_list() {
   assert!((layout.image_ratio - 0.35).abs() < f32::EPSILON);
   assert_eq!(layout.label_lines, 0);
   assert!(!layout.show_border);
+  assert_eq!(layout.padding, 1);
+}
+
+#[test]
+fn layout_command_can_override_padding() {
+  let mut config = LayoutConfig::default();
+  config
+    .presets
+    .get_mut("list")
+    .unwrap()
+    .params
+    .push("padding".to_string());
+
+  let layout = config
+    .set_active_from_args("list", &["12", "2"])
+    .expect("list layout padding arg should parse");
+
+  assert_eq!(layout.strategy, "list");
+  assert!(!layout.show_border);
+  assert_eq!(layout.padding, 2);
 }

@@ -38,6 +38,10 @@ For top and bottom filename placement, layouts can use `label_lines` to reserve
 a fixed number of filename rows. The default grid and masonry presets reserve
 one row.
 
+Cards use `padding` to keep content away from the card edge. In bordered cards,
+padding is applied inside the border; in borderless cards, it leaves room for
+focused and selected background colors to remain visible.
+
 ## Detail View
 
 Detail view keeps focus on the current image and has two pages:

@@ -14,6 +14,7 @@ view, and detail-only commands do not fire in browser view.
 - `pgup`, `pgdn`: page-style focus navigation
 - `home`, `end`: first/last image
 - `space`: toggle selection and move focus to the next image
+- `esc`: clear selected images
 - `r`: rename focused image; the cursor starts before the extension dot
 - `c p`: output selected paths, or focused path if nothing is selected
 - `s n`, `s N`: sort by name ascending/descending

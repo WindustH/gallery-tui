@@ -168,6 +168,7 @@ impl App {
           | "home"
           | "end"
           | "toggle_select"
+          | "clear_selection"
           | "copy_paths"
       ),
       ViewMode::Detail => matches!(
@@ -209,6 +210,7 @@ impl App {
       "home" => self.focus_first(),
       "end" => self.focus_last(),
       "toggle_select" => self.toggle_select(),
+      "clear_selection" => self.clear_selection(),
       "rename" => self.start_rename(),
       "command" => self.start_command(),
       "edit_metadata" => self.start_metadata_edit(),

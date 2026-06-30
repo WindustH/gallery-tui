@@ -41,6 +41,7 @@ Common browser actions:
 - `page_up`, `page_down`
 - `home`, `end`
 - `toggle_select`
+- `clear_selection`
 - `copy_paths`
 - `sort <field> <asc|desc>`
 - `layout <name> [args...]`

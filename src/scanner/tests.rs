@@ -21,6 +21,14 @@ fn missing_path_is_skipped() {
 }
 
 #[test]
+fn rotated_orientation_flips_layout_dimensions() {
+  assert_eq!(
+    apply_orientation_to_dimensions((4000, 3000), image::metadata::Orientation::Rotate90),
+    (3000, 4000)
+  );
+}
+
+#[test]
 fn unreadable_image_data_still_keeps_file_metadata() {
   let dir = temp_path("invalid-image");
   std::fs::create_dir_all(&dir).unwrap();

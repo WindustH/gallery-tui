@@ -1,6 +1,7 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use anyhow::{Context, Result};
+use image::{ImageDecoder, ImageReader, metadata::Orientation};
 use tracing::warn;
 use walkdir::WalkDir;
 
@@ -59,7 +60,7 @@ fn image_item_from_path(path: PathBuf, extension: String) -> Option<ImageItem> {
       return None;
     }
   };
-  let dimensions = image::image_dimensions(&path).ok();
+  let dimensions = oriented_image_dimensions(&path);
   let image_metadata = read_image_metadata(&path);
   let file_name = path
     .file_name()
@@ -76,6 +77,22 @@ fn image_item_from_path(path: PathBuf, extension: String) -> Option<ImageItem> {
     dimensions,
     metadata: image_metadata,
   })
+}
+
+fn oriented_image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+  let reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+  let mut decoder = reader.into_decoder().ok()?;
+  let dimensions = decoder.dimensions();
+  let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+  Some(apply_orientation_to_dimensions(dimensions, orientation))
+}
+
+fn apply_orientation_to_dimensions(dimensions: (u32, u32), orientation: Orientation) -> (u32, u32) {
+  use Orientation::{Rotate90, Rotate90FlipH, Rotate270, Rotate270FlipH};
+  match orientation {
+    Rotate90 | Rotate90FlipH | Rotate270 | Rotate270FlipH => (dimensions.1, dimensions.0),
+    _ => dimensions,
+  }
 }
 
 #[cfg(test)]

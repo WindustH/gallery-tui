@@ -85,6 +85,16 @@ impl App {
     }
   }
 
+  pub(super) fn clear_selection(&mut self) {
+    let count = self.selected.len();
+    if count == 0 {
+      self.set_message("no selected images");
+      return;
+    }
+    self.selected.clear();
+    self.set_message(format!("cleared {count} selected image(s)"));
+  }
+
   pub(super) fn handle_scroll_down(&mut self) {
     match self.view {
       ViewMode::Browser => self.focus_vertical(1),

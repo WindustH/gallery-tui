@@ -59,3 +59,22 @@ fn rename_rejects_existing_target() {
   let _ = std::fs::remove_file(target);
   let _ = std::fs::remove_dir(dir);
 }
+
+#[test]
+fn rename_operation_does_not_replace_existing_target() {
+  let dir = unique_temp_dir("rename-no-replace");
+  std::fs::create_dir_all(&dir).unwrap();
+  let source = dir.join("old.jpg");
+  let target = dir.join("new.jpg");
+  std::fs::write(&source, b"old").unwrap();
+  std::fs::write(&target, b"new").unwrap();
+
+  let error = rename_file_no_replace(&source, &target).unwrap_err();
+
+  assert!(error.contains("target already exists"));
+  assert_eq!(std::fs::read(&source).unwrap(), b"old");
+  assert_eq!(std::fs::read(&target).unwrap(), b"new");
+  let _ = std::fs::remove_file(source);
+  let _ = std::fs::remove_file(target);
+  let _ = std::fs::remove_dir(dir);
+}

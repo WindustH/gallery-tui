@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
   App, ConfirmDialog, EditorRequest, Prompt, ViewMode, action_is_layout_command,
-  action_is_sort_command, rename_cursor_position, validate_new_file_name,
+  action_is_sort_command, rename_cursor_position, rename_file_no_replace, validate_new_file_name,
 };
 
 impl App {
@@ -83,7 +83,7 @@ impl App {
           let mut rename_applied = false;
           let result = (|| {
             if path != to {
-              std::fs::rename(&path, &to).map_err(|err| err.to_string())?;
+              rename_file_no_replace(&path, &to)?;
               rename_applied = true;
             }
             metadata::write_metadata_with_exiftool(&to, &edit.tags)?;

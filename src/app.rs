@@ -237,6 +237,56 @@ fn validate_new_file_name(path: &Path, file_name: &str) -> Result<PathBuf, Strin
   Ok(to)
 }
 
+fn rename_file_no_replace(from: &Path, to: &Path) -> Result<(), String> {
+  if from == to {
+    return Ok(());
+  }
+  rename_file_no_replace_impl(from, to)
+}
+
+#[cfg(target_os = "linux")]
+fn rename_file_no_replace_impl(from: &Path, to: &Path) -> Result<(), String> {
+  use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+  let from_c = CString::new(from.as_os_str().as_bytes())
+    .map_err(|_| "source path cannot contain NUL".to_string())?;
+  let to_bytes = to.as_os_str().as_bytes();
+  let to_c = CString::new(to_bytes).map_err(|_| "target path cannot contain NUL".to_string())?;
+
+  let result = unsafe {
+    libc::syscall(
+      libc::SYS_renameat2,
+      libc::AT_FDCWD,
+      from_c.as_ptr(),
+      libc::AT_FDCWD,
+      to_c.as_ptr(),
+      libc::RENAME_NOREPLACE,
+    )
+  };
+  if result == 0 {
+    return Ok(());
+  }
+
+  let error = std::io::Error::last_os_error();
+  match error.raw_os_error() {
+    Some(libc::EEXIST) => Err(format!("target already exists: {}", file_label(to))),
+    Some(libc::ENOSYS) | Some(libc::EINVAL) => rename_file_no_replace_fallback(from, to),
+    _ => Err(error.to_string()),
+  }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_file_no_replace_impl(from: &Path, to: &Path) -> Result<(), String> {
+  rename_file_no_replace_fallback(from, to)
+}
+
+fn rename_file_no_replace_fallback(from: &Path, to: &Path) -> Result<(), String> {
+  if to.exists() {
+    return Err(format!("target already exists: {}", file_label(to)));
+  }
+  std::fs::rename(from, to).map_err(|err| err.to_string())
+}
+
 fn rename_cursor_position(file_name: &str) -> usize {
   file_name
     .rfind('.')

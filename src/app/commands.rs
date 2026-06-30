@@ -8,7 +8,7 @@ use crate::{
   scanner,
 };
 
-use super::{App, validate_new_file_name};
+use super::{App, rename_file_no_replace, validate_new_file_name};
 
 impl App {
   fn apply_sort(&mut self, sort_spec: SortSpec) {
@@ -63,9 +63,14 @@ impl App {
     let tx = tx.clone();
     info!(from = %from.display(), to = %to.display(), "rename requested");
     tokio::spawn(async move {
-      let result = tokio::fs::rename(&from, &to)
-        .await
-        .map_err(|err| err.to_string());
+      let result = tokio::task::spawn_blocking({
+        let from = from.clone();
+        let to = to.clone();
+        move || rename_file_no_replace(&from, &to)
+      })
+      .await
+      .map_err(|err| format!("rename worker failed: {err}"))
+      .and_then(|result| result);
       let _ = tx.send(AsyncEvent::Rename(RenameOutcome { from, to, result }));
     });
   }

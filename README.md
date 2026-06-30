@@ -19,7 +19,12 @@ folder and displays the images as navigable cards in a TUI.
 
 ```sh
 gallery-tui /path/to/images
+gallery-tui /path/to/image.png
+gallery-tui --browser /path/to/image.png
 ```
+
+Opening a single image starts in detail view. Pressing `q` exits immediately;
+with `--browser`, `q` returns to the folder browser instead.
 
 Batch path output from `c p` is written to stdout after the UI exits, so it can
 be piped:

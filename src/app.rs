@@ -68,6 +68,7 @@ pub struct App {
   pub protocol_overlays: Vec<ProtocolOverlay>,
   pub terminal_cell_pixels: Option<(u16, u16)>,
   pub confirm: Option<ConfirmDialog>,
+  pub detail_back_quits: bool,
   quit: bool,
   stdout_paths: Option<Vec<PathBuf>>,
   editor_request: Option<EditorRequest>,
@@ -105,6 +106,7 @@ impl App {
       protocol_overlays: Vec::new(),
       terminal_cell_pixels: None,
       confirm: None,
+      detail_back_quits: false,
       quit: false,
       stdout_paths: None,
       editor_request: None,
@@ -196,6 +198,16 @@ impl App {
 
   pub fn current(&self) -> Option<&ImageItem> {
     self.images.get(self.focused)
+  }
+
+  pub fn enter_detail(&mut self, back_quits: bool) {
+    if self.images.is_empty() {
+      return;
+    }
+    self.view = ViewMode::Detail;
+    self.detail_page = DetailPage::Image;
+    self.detail_scroll = 0;
+    self.detail_back_quits = back_quits;
   }
 
   pub fn selected_or_focused_paths(&self) -> Vec<PathBuf> {

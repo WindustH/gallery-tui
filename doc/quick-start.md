@@ -6,6 +6,20 @@ Run `gallery-tui` with an image directory:
 gallery-tui /path/to/images
 ```
 
+You can also open a single image. This scans the image's parent directory,
+focuses that image, and starts directly in detail view:
+
+```sh
+gallery-tui /path/to/image.png
+```
+
+In single-image mode, `q` exits the program. Add `--browser` if `q` should
+return from detail view to the browser instead:
+
+```sh
+gallery-tui --browser /path/to/image.png
+```
+
 The TUI writes interface output to stderr. Batch path output from `c p` is
 written to stdout after the UI exits, so it can be piped:
 
@@ -28,5 +42,5 @@ Basic workflow:
 1. Move focus with `h/j/k/l`, arrow keys, mouse wheel, or mouse click.
 2. Press `enter` to open detail view.
 3. Use `h/l` in detail view to switch between image and metadata pages.
-4. Press `q` in detail view to return to the browser.
+4. Press `q` in detail view to return to the browser, except in default single-image mode where it quits.
 5. Press `q` in browser view to quit.

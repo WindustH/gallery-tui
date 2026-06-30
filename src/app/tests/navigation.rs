@@ -24,6 +24,19 @@ fn q_returns_from_detail_without_quitting() {
 }
 
 #[test]
+fn q_quits_from_single_image_detail() {
+  let (tx, _rx) = mpsc::unbounded_channel();
+  let mut app = test_app();
+  app.images = vec![image("a.png")];
+  app.enter_detail(true);
+
+  app.handle_input(key('q'), &tx);
+
+  assert!(app.should_quit());
+  assert_eq!(app.view, ViewMode::Detail);
+}
+
+#[test]
 fn esc_clears_selection_in_browser() {
   let (tx, _rx) = mpsc::unbounded_channel();
   let mut app = test_app();

@@ -197,8 +197,7 @@ impl App {
       "back" => self.handle_back(),
       "open" => {
         if self.view == ViewMode::Browser && !self.images.is_empty() {
-          self.view = ViewMode::Detail;
-          self.detail_scroll = 0;
+          self.enter_detail(false);
         }
       }
       "move_left" => self.move_left(),

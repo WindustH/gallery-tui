@@ -17,7 +17,7 @@ mod ui;
 use std::{
   env, fs,
   io::{self, Write},
-  path::PathBuf,
+  path::{Path, PathBuf},
   process::Command,
   sync::{
     Arc,
@@ -48,20 +48,29 @@ use crate::{
   about = "Browse image folders in a terminal UI using ratatui and chafa"
 )]
 struct Cli {
-  /// Folder containing images.
+  /// When opening a single image, let q return from detail to browser instead of quitting.
+  #[arg(long)]
+  browser: bool,
+
+  /// Image file or folder containing images.
   path: PathBuf,
+}
+
+#[derive(Debug)]
+struct StartupTarget {
+  root: PathBuf,
+  focus: Option<PathBuf>,
+  detail_back_quits: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
   let cli = Cli::parse();
-  let root = cli
+  let input = cli
     .path
     .canonicalize()
     .with_context(|| format!("failed to resolve {}", cli.path.display()))?;
-  if !root.is_dir() {
-    bail!("{} is not a directory", root.display());
-  }
+  let startup = startup_target(input, cli.browser)?;
 
   let settings = config::load_or_create().await?;
   let log_path = logging::init(&settings.cache_dir)?;
@@ -101,15 +110,20 @@ async fn main() -> Result<()> {
       "render mode order"
   );
 
-  let mut images = scanner::scan_images(root.clone(), &settings.config).await?;
+  let mut images = scanner::scan_images(startup.root.clone(), &settings.config).await?;
   let initial_sort = settings.config.initial_sort_spec();
   sort_images(&mut images, &initial_sort);
+  let focused = focus_index(&images, startup.focus.as_deref())?;
 
   let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
   let input_enabled = Arc::new(AtomicBool::new(true));
   spawn_input_thread(tx.clone(), input_enabled.clone());
 
-  let mut app = App::new(root, settings, images);
+  let mut app = App::new(startup.root, settings, images);
+  app.focused = focused;
+  if startup.focus.is_some() {
+    app.enter_detail(startup.detail_back_quits);
+  }
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
   let native_config = NativeImageConfig {
     cell_pixels: terminal_capability.cell_pixels,
@@ -187,6 +201,43 @@ async fn main() -> Result<()> {
   }
 
   Ok(())
+}
+
+fn startup_target(input: PathBuf, browser: bool) -> Result<StartupTarget> {
+  if input.is_dir() {
+    return Ok(StartupTarget {
+      root: input,
+      focus: None,
+      detail_back_quits: false,
+    });
+  }
+  if input.is_file() {
+    let root = input
+      .parent()
+      .map(Path::to_path_buf)
+      .with_context(|| format!("{} has no parent directory", input.display()))?;
+    return Ok(StartupTarget {
+      root,
+      focus: Some(input),
+      detail_back_quits: !browser,
+    });
+  }
+  bail!("{} is not a file or directory", input.display())
+}
+
+fn focus_index(images: &[crate::model::ImageItem], focus: Option<&Path>) -> Result<usize> {
+  let Some(focus) = focus else {
+    return Ok(0);
+  };
+  images
+    .iter()
+    .position(|item| item.path == focus)
+    .with_context(|| {
+      format!(
+        "{} is not a supported image in this folder",
+        focus.display()
+      )
+    })
 }
 
 fn spawn_input_thread(tx: mpsc::UnboundedSender<AsyncEvent>, enabled: Arc<AtomicBool>) {

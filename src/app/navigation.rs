@@ -5,7 +5,11 @@ use crate::app::{App, DetailPage, ViewMode};
 impl App {
   pub(super) fn handle_back(&mut self) {
     if self.view == ViewMode::Detail {
-      self.view = ViewMode::Browser;
+      if self.detail_back_quits {
+        self.quit = true;
+      } else {
+        self.view = ViewMode::Browser;
+      }
     } else {
       self.pending_keys.clear();
       self.hints.clear();

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use unicode_width::UnicodeWidthStr;
+
 #[derive(Debug, Clone)]
 pub enum Prompt {
   Rename { buffer: PromptBuffer },
@@ -51,6 +53,15 @@ impl PromptBuffer {
     self.cursor += ch.len_utf8();
   }
 
+  pub(super) fn insert_str(&mut self, value: &str) {
+    let value = sanitize_inline_input(value);
+    if value.is_empty() {
+      return;
+    }
+    self.input.insert_str(self.cursor, &value);
+    self.cursor += value.len();
+  }
+
   pub(super) fn backspace(&mut self) {
     if self.cursor == 0 {
       return;
@@ -94,7 +105,7 @@ impl PromptBuffer {
   }
 
   pub fn cursor_columns(&self) -> usize {
-    self.input[..self.cursor].chars().count()
+    UnicodeWidthStr::width(&self.input[..self.cursor])
   }
 }
 
@@ -214,4 +225,14 @@ fn next_boundary(input: &str, cursor: usize) -> usize {
     .get(cursor..)
     .and_then(|suffix| suffix.char_indices().nth(1).map(|(idx, _)| cursor + idx))
     .unwrap_or(input.len())
+}
+
+fn sanitize_inline_input(value: &str) -> String {
+  value
+    .chars()
+    .map(|ch| match ch {
+      '\r' | '\n' => ' ',
+      ch => ch,
+    })
+    .collect()
 }

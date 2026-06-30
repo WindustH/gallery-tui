@@ -110,6 +110,29 @@ fn prompt_input_moves_cursor_and_edits_at_cursor() {
 }
 
 #[test]
+fn prompt_paste_inserts_text_without_keymap_interpreting_it() {
+  let (tx, _rx) = mpsc::unbounded_channel();
+  let mut app = test_app();
+  app.prompt = Some(Prompt::command("rename "));
+
+  app.handle_input(Event::Paste("你好\n世界".to_string()), &tx);
+
+  assert_eq!(command_input(&app), "rename 你好 世界");
+  assert_eq!(
+    app.command_buffer().unwrap().cursor,
+    "rename 你好 世界".len()
+  );
+}
+
+#[test]
+fn prompt_cursor_columns_use_display_width() {
+  let mut buffer = PromptBuffer::new("a你b");
+  buffer.cursor = "a你".len();
+
+  assert_eq!(buffer.cursor_columns(), 3);
+}
+
+#[test]
 fn prompt_input_requests_external_editor() {
   let (tx, _rx) = mpsc::unbounded_channel();
   let mut app = test_app();

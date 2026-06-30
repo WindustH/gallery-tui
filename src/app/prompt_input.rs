@@ -14,6 +14,14 @@ use super::{
 };
 
 impl App {
+  pub(super) fn handle_prompt_paste(&mut self, value: &str) {
+    if let Some(prompt) = self.prompt.as_mut() {
+      prompt.buffer_mut().insert_str(value);
+    }
+    self.reset_command_history_cursor();
+    self.refresh_command_completion();
+  }
+
   pub(super) fn handle_prompt_key(
     &mut self,
     key: KeyEvent,

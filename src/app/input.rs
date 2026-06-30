@@ -21,6 +21,7 @@ impl App {
     }
     match input {
       Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
+      Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
       Event::Key(key) => {
         let Some(token) = key_event_to_token(key) else {
           return;

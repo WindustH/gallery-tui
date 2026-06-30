@@ -3,7 +3,7 @@ use std::io::{self, Stderr, Write};
 use anyhow::Result;
 use crossterm::{
   cursor::{MoveTo, RestorePosition, SavePosition},
-  event::{DisableMouseCapture, EnableMouseCapture},
+  event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
   execute,
   terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -31,7 +31,12 @@ impl Tui {
   pub fn new(protocol_reset: Option<String>) -> Result<Self> {
     enable_raw_mode()?;
     let mut stderr = io::stderr();
-    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+      stderr,
+      EnterAlternateScreen,
+      EnableMouseCapture,
+      EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stderr);
     let mut terminal = Terminal::new(backend)?;
     reset_protocol_images(terminal.backend_mut(), protocol_reset.as_deref())?;
@@ -134,7 +139,8 @@ impl Tui {
       execute!(
         self.terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
       )?;
     }
     self.suspended = true;
@@ -155,7 +161,8 @@ impl Tui {
     execute!(
       self.terminal.backend_mut(),
       LeaveAlternateScreen,
-      DisableMouseCapture
+      DisableMouseCapture,
+      DisableBracketedPaste
     )?;
     self.suspended = true;
     Ok(())
@@ -169,7 +176,8 @@ impl Tui {
     execute!(
       self.terminal.backend_mut(),
       EnterAlternateScreen,
-      EnableMouseCapture
+      EnableMouseCapture,
+      EnableBracketedPaste
     )?;
     self.terminal.clear()?;
     reset_protocol_images(self.terminal.backend_mut(), self.protocol_reset.as_deref())?;

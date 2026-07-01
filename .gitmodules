@@ -10,6 +10,3 @@
 [submodule "homebrew-tap"]
 	path = homebrew-tap
 	url = https://github.com/WindustH/homebrew-tap.git
-[submodule "assets"]
-	path = assets
-	url = https://github.com/WindustH/gallery-tui-assets.git

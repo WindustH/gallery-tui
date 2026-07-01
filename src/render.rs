@@ -18,7 +18,7 @@ use crate::{
   cache,
   capability::RenderMode,
   config::RenderConfig,
-  event::{AsyncEvent, RenderOutcome, RenderedImage},
+  event::{AsyncEvent, ProtocolPlacement, RenderOutcome, RenderedImage},
   model::ImageItem,
   native_image::{self, NativeImageConfig},
 };
@@ -463,10 +463,17 @@ fn decode_rendered(
   if mode.is_protocol() {
     let fingerprint = render_fingerprint(&bytes);
     let data = String::from_utf8(bytes).map_err(|err| err.to_string())?;
+    let placement = match (mode, native_config.passthrough.as_deref(), image_id) {
+      (RenderMode::Kitty, Some("tmux"), Some(image_id)) => {
+        Some(ProtocolPlacement::KittyUnicode { image_id })
+      }
+      _ => None,
+    };
     let erase = native_image::erase_sequence(mode, native_config.passthrough.as_deref(), image_id);
     Ok(RenderedImage::Protocol {
       mode,
       data,
+      placement,
       fingerprint,
       erase,
     })
@@ -674,7 +681,7 @@ fn decompress_zstd(payload: Vec<u8>) -> std::io::Result<Vec<u8>> {
 }
 
 fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
-  hasher.update(b"render-v4");
+  hasher.update(b"render-v5");
   hasher.update([0]);
   hasher.update(config.chafa_bin.as_bytes());
   hasher.update([0]);
@@ -695,7 +702,7 @@ fn kitty_image_id(path: &Path, width: u16, height: u16, mode: RenderMode) -> Opt
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());
   let digest = hasher.finalize();
-  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default());
+  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x00ff_ffff;
   Some(image_id.max(1))
 }
 

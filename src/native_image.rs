@@ -49,6 +49,11 @@ impl ProtocolEnvelope {
         escape: "\x1b\x1b",
         close: "\x1b\\",
       },
+      Some("screen") => Self {
+        start: "\x1bP\x1b",
+        escape: "\x1b",
+        close: "\x1b\\",
+      },
       _ => Self {
         start: "\x1b",
         escape: "\x1b",
@@ -91,7 +96,15 @@ pub async fn render_prepared(
   let image = prepared.image.clone();
   let envelope = ProtocolEnvelope::new(config.passthrough.as_deref());
   match mode {
-    RenderMode::Kitty => encode_kitty(image, &envelope, image_id.unwrap_or(1)).await,
+    RenderMode::Kitty => {
+      encode_kitty(
+        image,
+        &envelope,
+        image_id.unwrap_or(1),
+        config.passthrough.as_deref() == Some("tmux"),
+      )
+      .await
+    }
     RenderMode::Iterm2 => encode_iterm(image, &envelope).await,
     RenderMode::Sixel => encode_sixel(image, &envelope).await,
     RenderMode::Symbols | RenderMode::Ascii => bail!("{} is not a native image mode", mode.label()),
@@ -302,24 +315,49 @@ async fn encode_kitty(
   image: Arc<DynamicImage>,
   envelope: &ProtocolEnvelope,
   image_id: u32,
+  unicode_placeholders: bool,
 ) -> Result<Vec<u8>> {
   let envelope = envelope.clone();
   tokio::task::spawn_blocking(move || {
     let size = (image.width(), image.height());
     match image.as_ref() {
-      DynamicImage::ImageRgb8(image) => {
-        encode_kitty_raw(image.as_raw(), 24, size, image_id, &envelope)
-      }
-      DynamicImage::ImageRgba8(image) => {
-        encode_kitty_raw(image.as_raw(), 32, size, image_id, &envelope)
-      }
+      DynamicImage::ImageRgb8(image) => encode_kitty_raw(
+        image.as_raw(),
+        24,
+        size,
+        image_id,
+        unicode_placeholders,
+        &envelope,
+      ),
+      DynamicImage::ImageRgba8(image) => encode_kitty_raw(
+        image.as_raw(),
+        32,
+        size,
+        image_id,
+        unicode_placeholders,
+        &envelope,
+      ),
       image if image.color().has_alpha() => {
         let image = image.to_rgba8();
-        encode_kitty_raw(image.as_raw(), 32, size, image_id, &envelope)
+        encode_kitty_raw(
+          image.as_raw(),
+          32,
+          size,
+          image_id,
+          unicode_placeholders,
+          &envelope,
+        )
       }
       image => {
         let image = image.to_rgb8();
-        encode_kitty_raw(image.as_raw(), 24, size, image_id, &envelope)
+        encode_kitty_raw(
+          image.as_raw(),
+          24,
+          size,
+          image_id,
+          unicode_placeholders,
+          &envelope,
+        )
       }
     }
   })
@@ -331,6 +369,7 @@ fn encode_kitty_raw(
   format: u8,
   size: (u32, u32),
   image_id: u32,
+  unicode_placeholders: bool,
   envelope: &ProtocolEnvelope,
 ) -> Result<Vec<u8>> {
   const RAW_CHUNK_SIZE: usize = 3072;
@@ -342,9 +381,11 @@ fn encode_kitty_raw(
   let mut out = Vec::with_capacity(encoded_len + chunk_count * 64 + 64);
   if let Some(first) = chunks.next() {
     STANDARD.encode_string(first, &mut encoded);
+    let z_index = if unicode_placeholders { "" } else { "z=-1," };
+    let unicode_placeholder = if unicode_placeholders { "U=1," } else { "" };
     write!(
       out,
-      "{}_Gq=2,a=T,z=-1,C=1,f={format},s={},v={},i={image_id},m={};{}{}\\{}",
+      "{}_Gq=2,a=T,{z_index}C=1,{unicode_placeholder}f={format},s={},v={},i={image_id},m={};{}{}\\{}",
       envelope.start,
       size.0,
       size.1,

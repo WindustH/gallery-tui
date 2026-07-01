@@ -62,6 +62,7 @@ pub(super) fn draw_rendered_image(
       RenderedImage::Protocol {
         mode,
         data,
+        placement,
         fingerprint,
         erase,
       } => {
@@ -71,6 +72,7 @@ pub(super) fn draw_rendered_image(
           area: image_area,
           mode: *mode,
           data: data.clone(),
+          placement: placement.clone(),
           fingerprint: *fingerprint,
           erase: erase.clone(),
         });

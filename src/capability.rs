@@ -1,4 +1,8 @@
-use std::{env, time::Duration};
+use std::{
+  env,
+  process::{Command, Stdio},
+  time::Duration,
+};
 
 #[cfg(unix)]
 use std::{
@@ -221,6 +225,9 @@ pub fn detect() -> TerminalCapability {
   let term_program = env::var("TERM_PROGRAM").ok();
   let colorterm = env::var("COLORTERM").ok();
   let multiplexer = detect_multiplexer();
+  if multiplexer.as_deref() == Some("tmux") {
+    enable_tmux_passthrough();
+  }
   let env_brand = detect_brand_from_env(term.as_deref(), term_program.as_deref());
   let needs_identity_probe = env_brand.is_none() && multiplexer.as_deref() != Some("zellij");
   let requests = ProbeRequests {
@@ -289,6 +296,20 @@ pub fn detect() -> TerminalCapability {
     pixel_protocols,
     color_level,
     cell_pixels,
+  }
+}
+
+fn enable_tmux_passthrough() {
+  match Command::new("tmux")
+    .args(["set", "-p", "allow-passthrough", "on"])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped())
+    .status()
+  {
+    Ok(status) if status.success() => {}
+    Ok(status) => warn!(?status, "failed to enable tmux passthrough"),
+    Err(error) => warn!(%error, "failed to run tmux passthrough setup"),
   }
 }
 

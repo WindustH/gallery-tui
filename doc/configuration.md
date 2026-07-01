@@ -101,6 +101,9 @@ Render fields:
 - `cache_compression_threads`: zstd compression threads
 - `zellij_sixel`: `off`, `auto`, or `on`
 
+`max_concurrent` is the global render worker limit. Preloading uses the same
+limit but leaves one worker slot free for the focused image when possible.
+
 ## `[behavior]`
 
 Behavior fields:

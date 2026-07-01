@@ -7,6 +7,11 @@ Rendering is limited by:
 
 - `render.max_concurrent`
 
+Focused images and detail previews share the same global render limit as
+preloads, but preloads reserve at most `render.max_concurrent - 1` slots. This
+keeps at least one slot available for the currently visible image while
+background work is active.
+
 Chafa fallback is controlled by:
 
 - `render.chafa_bin`
@@ -15,6 +20,13 @@ Chafa fallback is controlled by:
 
 Native image protocols resize images to the target preview bounds, including
 upscaling low-resolution images so they use the available preview space.
+Native resize uses a SIMD-accelerated path for common 8-bit pixel formats and
+falls back to the image crate for higher bit-depth formats. When multiple
+native protocol backends are tried for the same image and size, the decoded and
+resized intermediate image is shared across those attempts.
+
+Sixel output reuses contiguous RGB/alpha buffers and parallelizes alpha index
+preparation plus scanline run encoding.
 
 Chafa fallback uses `--scale=max` unless overridden in `render.chafa_args`.
 

@@ -8,7 +8,10 @@ use std::{
 
 use ansi_to_tui::IntoText;
 use sha2::{Digest, Sha256};
-use tokio::{fs, sync::Semaphore, sync::mpsc};
+use tokio::{
+  fs,
+  sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+};
 use tracing::{debug, warn};
 
 use crate::{
@@ -29,6 +32,12 @@ pub struct RenderStore {
   failures: HashMap<String, String>,
   in_flight: HashSet<String>,
   semaphore: Arc<Semaphore>,
+  preload_semaphore: Arc<Semaphore>,
+}
+
+struct RenderPermits {
+  _global: OwnedSemaphorePermit,
+  _preload: Option<OwnedSemaphorePermit>,
 }
 
 impl RenderStore {
@@ -39,6 +48,7 @@ impl RenderStore {
     modes: Vec<RenderMode>,
   ) -> Self {
     let max_concurrent = config.max_concurrent.max(1);
+    let max_preloads = max_concurrent.saturating_sub(1);
     Self {
       cache_dir,
       config,
@@ -48,6 +58,7 @@ impl RenderStore {
       failures: HashMap::new(),
       in_flight: HashSet::new(),
       semaphore: Arc::new(Semaphore::new(max_concurrent)),
+      preload_semaphore: Arc::new(Semaphore::new(max_preloads)),
     }
   }
 
@@ -67,6 +78,17 @@ impl RenderStore {
     width: u16,
     height: u16,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) {
+    self.request_with_permits(item, width, height, tx, None);
+  }
+
+  fn request_with_permits(
+    &mut self,
+    item: &ImageItem,
+    width: u16,
+    height: u16,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    permits: Option<RenderPermits>,
   ) {
     if width == 0 || height == 0 {
       return;
@@ -98,6 +120,7 @@ impl RenderStore {
         native_config,
         modes,
         semaphore,
+        permits,
       )
       .await;
       let _ = tx.send(AsyncEvent::Render(RenderOutcome { cache_key, result }));
@@ -114,7 +137,19 @@ impl RenderStore {
     if self.in_flight.len() >= self.config.max_concurrent.max(1) {
       return;
     }
-    self.request(item, width, height, tx);
+    let Some(permits) = self.try_preload_permits() else {
+      return;
+    };
+    self.request_with_permits(item, width, height, tx, Some(permits));
+  }
+
+  fn try_preload_permits(&self) -> Option<RenderPermits> {
+    let preload = self.preload_semaphore.clone().try_acquire_owned().ok()?;
+    let global = self.semaphore.clone().try_acquire_owned().ok()?;
+    Some(RenderPermits {
+      _global: global,
+      _preload: Some(preload),
+    })
   }
 
   pub fn finish(&mut self, outcome: RenderOutcome) -> Option<String> {
@@ -165,25 +200,51 @@ async fn render_with_fallbacks(
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
   semaphore: Arc<Semaphore>,
+  permits: Option<RenderPermits>,
 ) -> Result<RenderedImage, String> {
+  let _permits = match permits {
+    Some(permits) => permits,
+    None => RenderPermits {
+      _global: semaphore
+        .acquire_owned()
+        .await
+        .map_err(|err| err.to_string())?,
+      _preload: None,
+    },
+  };
   let mut errors = Vec::new();
+  let mut prepared_native = None;
   for mode in modes {
     let cache_path = cache_dir.join(format!(
       "{}.ansi",
       render_cache_key(&image_path, width, height, &config, &native_config, mode)
     ));
-    match render_or_read_cache(
-      image_path.clone(),
-      cache_path,
-      width,
-      height,
-      config.clone(),
-      native_config.clone(),
-      mode,
-      semaphore.clone(),
-    )
-    .await
-    {
+    let rendered = if mode.is_protocol() {
+      render_or_read_cache(
+        image_path.clone(),
+        cache_path,
+        width,
+        height,
+        config.clone(),
+        native_config.clone(),
+        mode,
+        Some(&mut prepared_native),
+      )
+      .await
+    } else {
+      render_or_read_cache(
+        image_path.clone(),
+        cache_path,
+        width,
+        height,
+        config.clone(),
+        native_config.clone(),
+        mode,
+        None,
+      )
+      .await
+    };
+    match rendered {
       Ok(rendered) => {
         debug!(path = %image_path.display(), mode = mode.label(), "render succeeded");
         return Ok(rendered);
@@ -206,7 +267,7 @@ async fn render_or_read_cache(
   config: RenderConfig,
   native_config: NativeImageConfig,
   mode: RenderMode,
-  semaphore: Arc<Semaphore>,
+  prepared_native: Option<&mut Option<Result<native_image::PreparedNativeImage, String>>>,
 ) -> Result<RenderedImage, String> {
   let image_id = kitty_image_id(&image_path, width, height, mode);
   if let Ok(bytes) = fs::read(&cache_path).await {
@@ -260,10 +321,6 @@ async fn render_or_read_cache(
     }
   }
 
-  let _permit = semaphore
-    .acquire_owned()
-    .await
-    .map_err(|err| err.to_string())?;
   if let Some(parent) = cache_path.parent() {
     fs::create_dir_all(parent)
       .await
@@ -271,9 +328,29 @@ async fn render_or_read_cache(
   }
 
   let bytes = if mode.is_protocol() {
-    native_image::render(&image_path, width, height, mode, &native_config, image_id)
-      .await
-      .map_err(|err| err.to_string())?
+    match prepared_native {
+      Some(prepared_native) => {
+        if prepared_native.is_none() {
+          *prepared_native = Some(
+            native_image::prepare(&image_path, width, height, native_config.cell_pixels)
+              .await
+              .map_err(|err| err.to_string()),
+          );
+        }
+        match prepared_native
+          .as_ref()
+          .expect("prepared native image result exists")
+        {
+          Ok(prepared) => native_image::render_prepared(prepared, mode, &native_config, image_id)
+            .await
+            .map_err(|err| err.to_string())?,
+          Err(error) => return Err(error.clone()),
+        }
+      }
+      None => native_image::render(&image_path, width, height, mode, &native_config, image_id)
+        .await
+        .map_err(|err| err.to_string())?,
+    }
   } else {
     run_chafa(&image_path, width, height, &config, mode).await?
   };

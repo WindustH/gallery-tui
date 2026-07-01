@@ -174,7 +174,14 @@ impl App {
       ),
       ViewMode::Detail => matches!(
         action,
-        "back" | "move_left" | "move_down" | "move_up" | "move_right" | "edit_metadata"
+        "back"
+          | "move_left"
+          | "move_down"
+          | "move_up"
+          | "move_right"
+          | "home"
+          | "end"
+          | "edit_metadata"
       ),
     }
   }

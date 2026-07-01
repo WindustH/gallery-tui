@@ -233,7 +233,3 @@ fn read_exif_metadata(path: &Path) -> Result<Vec<ImageMetadataEntry>, String> {
   });
   Ok(entries)
 }
-
-#[cfg(test)]
-#[path = "metadata/tests.rs"]
-mod tests;

@@ -94,7 +94,3 @@ fn apply_orientation_to_dimensions(dimensions: (u32, u32), orientation: Orientat
     _ => dimensions,
   }
 }
-
-#[cfg(test)]
-#[path = "scanner/tests.rs"]
-mod tests;

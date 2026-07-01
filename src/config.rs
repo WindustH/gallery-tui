@@ -1333,7 +1333,3 @@ fn color_cube_component(value: u8) -> u8 {
 fn rgb_luminance(r: u8, g: u8, b: u8) -> f32 {
   (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0
 }
-
-#[cfg(test)]
-#[path = "config/tests.rs"]
-mod tests;

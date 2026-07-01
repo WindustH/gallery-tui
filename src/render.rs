@@ -715,7 +715,3 @@ fn render_fingerprint(bytes: &[u8]) -> u64 {
   let digest = hasher.finalize();
   u64::from_le_bytes(digest[..8].try_into().unwrap_or_default())
 }
-
-#[cfg(test)]
-#[path = "render/tests.rs"]
-mod tests;

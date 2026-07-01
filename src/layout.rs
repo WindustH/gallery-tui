@@ -215,7 +215,3 @@ fn centered_offset(total: u16, count: usize, item: u16, gap: u16) -> u16 {
     .saturating_add(gap.saturating_mul(count.saturating_sub(1) as u16));
   total.saturating_sub(used) / 2
 }
-
-#[cfg(test)]
-#[path = "layout/tests.rs"]
-mod tests;

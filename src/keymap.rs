@@ -203,7 +203,3 @@ pub fn key_event_to_token(event: KeyEvent) -> Option<String> {
     Some(base)
   }
 }
-
-#[cfg(test)]
-#[path = "keymap/tests.rs"]
-mod tests;

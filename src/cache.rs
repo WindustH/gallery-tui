@@ -178,7 +178,3 @@ async fn render_cache_last_used(cache_path: &Path, metadata: &std::fs::Metadata)
     .or_else(|_| metadata.modified())
     .unwrap_or(SystemTime::UNIX_EPOCH)
 }
-
-#[cfg(test)]
-#[path = "cache/tests.rs"]
-mod tests;

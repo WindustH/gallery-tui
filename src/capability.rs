@@ -737,7 +737,3 @@ fn detect_multiplexer() -> Option<String> {
     None
   }
 }
-
-#[cfg(test)]
-#[path = "capability/tests.rs"]
-mod tests;

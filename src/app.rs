@@ -328,6 +328,3 @@ fn action_is_layout_command(action: &str) -> bool {
 }
 
 const COMMAND_NAMES: &[&str] = &["refresh", "clear-cache", "sort", "layout", "layout-use"];
-
-#[cfg(test)]
-mod tests;

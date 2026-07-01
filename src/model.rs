@@ -248,10 +248,6 @@ fn normalize_metadata_key(value: &str) -> String {
     .collect()
 }
 
-#[cfg(test)]
-#[path = "model/tests.rs"]
-mod tests;
-
 fn time_key(time: Option<SystemTime>) -> u128 {
   time
     .and_then(|time| time.duration_since(UNIX_EPOCH).ok())

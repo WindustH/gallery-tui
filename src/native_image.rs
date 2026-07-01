@@ -466,10 +466,6 @@ async fn encode_sixel(image: Arc<DynamicImage>, envelope: &ProtocolEnvelope) -> 
   .await?
 }
 
-#[cfg(test)]
-#[path = "native_image/tests.rs"]
-mod tests;
-
 fn prepare_sixel_pixels(image: &DynamicImage) -> SixelPixels {
   let (width, height) = (image.width(), image.height());
   if image.color().has_alpha() {

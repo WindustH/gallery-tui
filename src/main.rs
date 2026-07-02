@@ -21,7 +21,7 @@ use std::{
   process::Command,
   sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
   },
   thread,
   time::{Duration, SystemTime},
@@ -100,7 +100,14 @@ async fn main() -> Result<()> {
     effective_render.apply_terminal_capability(&terminal_capability);
     tracing::info!(?effective_render.chafa_args, "selected chafa fallback mode");
   }
-  let render_modes = if effective_render.auto_detect {
+  let render_modes = if let Some(modes) = capability::render_modes_override_from_env() {
+    tracing::info!(
+      env = capability::RENDER_MODES_ENV,
+      modes = ?modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
+      "render mode order overridden by environment"
+    );
+    modes
+  } else if effective_render.auto_detect {
     terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
   } else {
     vec![RenderMode::Symbols, RenderMode::Ascii]
@@ -117,7 +124,8 @@ async fn main() -> Result<()> {
 
   let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
   let input_enabled = Arc::new(AtomicBool::new(true));
-  spawn_input_thread(tx.clone(), input_enabled.clone());
+  let input_generation = Arc::new(AtomicU64::new(0));
+  spawn_input_thread(tx.clone(), input_enabled.clone(), input_generation.clone());
 
   let mut app = App::new(startup.root, settings, images);
   app.focused = focused;
@@ -158,9 +166,14 @@ async fn main() -> Result<()> {
     }
     if let Some(request) = app.take_editor_request() {
       input_enabled.store(false, Ordering::SeqCst);
+      input_generation.fetch_add(1, Ordering::SeqCst);
       tui.suspend()?;
       let result = edit_text_in_editor(request.initial_text(), &app.settings.cache_dir);
       let resume_result = tui.resume();
+      if resume_result.is_ok() {
+        discard_pending_terminal_events();
+      }
+      input_generation.fetch_add(1, Ordering::SeqCst);
       input_enabled.store(true, Ordering::SeqCst);
       match request {
         EditorRequest::Prompt { .. } => app.finish_prompt_editor_input(result),
@@ -175,7 +188,11 @@ async fn main() -> Result<()> {
     tokio::select! {
         Some(message) = rx.recv() => {
             match message {
-                AsyncEvent::Input(input) => app.handle_input(input, &tx),
+                AsyncEvent::Input { event, generation } => {
+                    if generation == input_generation.load(Ordering::SeqCst) {
+                        app.handle_input(event, &tx);
+                    }
+                }
                 AsyncEvent::Render(outcome) => {
                     if let Some(error) = renderer.finish(outcome) {
                         app.set_message(error);
@@ -240,7 +257,11 @@ fn focus_index(images: &[crate::model::ImageItem], focus: Option<&Path>) -> Resu
     })
 }
 
-fn spawn_input_thread(tx: mpsc::UnboundedSender<AsyncEvent>, enabled: Arc<AtomicBool>) {
+fn spawn_input_thread(
+  tx: mpsc::UnboundedSender<AsyncEvent>,
+  enabled: Arc<AtomicBool>,
+  generation: Arc<AtomicU64>,
+) {
   thread::spawn(move || {
     loop {
       if !enabled.load(Ordering::SeqCst) {
@@ -249,10 +270,23 @@ fn spawn_input_thread(tx: mpsc::UnboundedSender<AsyncEvent>, enabled: Arc<Atomic
       }
       match crossterm_event::poll(Duration::from_millis(50)) {
         Ok(true) => {
+          if !enabled.load(Ordering::SeqCst) {
+            continue;
+          }
           let Ok(input) = crossterm_event::read() else {
             break;
           };
-          if tx.send(AsyncEvent::Input(input)).is_err() {
+          if !enabled.load(Ordering::SeqCst) {
+            continue;
+          }
+          let generation = generation.load(Ordering::SeqCst);
+          if tx
+            .send(AsyncEvent::Input {
+              event: input,
+              generation,
+            })
+            .is_err()
+          {
             break;
           }
         }
@@ -261,6 +295,19 @@ fn spawn_input_thread(tx: mpsc::UnboundedSender<AsyncEvent>, enabled: Arc<Atomic
       }
     }
   });
+}
+
+fn discard_pending_terminal_events() {
+  for _ in 0..256 {
+    match crossterm_event::poll(Duration::from_millis(0)) {
+      Ok(true) => {
+        if crossterm_event::read().is_err() {
+          break;
+        }
+      }
+      Ok(false) | Err(_) => break,
+    }
+  }
 }
 
 fn edit_text_in_editor(initial: &str, cache_dir: &std::path::Path) -> Result<String, String> {

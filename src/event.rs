@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum AsyncEvent {
-  Input(Event),
+  Input { event: Event, generation: u64 },
   Render(RenderOutcome),
   Scan(ScanOutcome),
   Rename(RenameOutcome),

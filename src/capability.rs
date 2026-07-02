@@ -14,6 +14,8 @@ use std::{
 
 use tracing::{debug, warn};
 
+pub const RENDER_MODES_ENV: &str = "GALLERY_TUI_RENDER_MODES";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelProtocol {
   Kitty,
@@ -52,6 +54,59 @@ impl RenderMode {
       Self::Symbols => "symbols",
       Self::Ascii => "ascii",
     }
+  }
+}
+
+pub fn render_modes_override_from_env() -> Option<Vec<RenderMode>> {
+  let value = env::var(RENDER_MODES_ENV).ok()?;
+  parse_render_modes_override(&value)
+}
+
+fn parse_render_modes_override(value: &str) -> Option<Vec<RenderMode>> {
+  if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("auto") {
+    return None;
+  }
+
+  let mut modes = Vec::new();
+  for token in value
+    .split(|ch: char| ch == ',' || ch == ':' || ch.is_ascii_whitespace())
+    .map(str::trim)
+    .filter(|token| !token.is_empty())
+  {
+    match token.to_ascii_lowercase().as_str() {
+      "auto" => {}
+      "kitty" | "kgp" => push_render_mode(&mut modes, RenderMode::Kitty),
+      "sixel" | "sixels" => push_render_mode(&mut modes, RenderMode::Sixel),
+      "iterm" | "iterm2" | "iip" => push_render_mode(&mut modes, RenderMode::Iterm2),
+      "symbols" | "symbol" => push_render_mode(&mut modes, RenderMode::Symbols),
+      "ascii" => push_render_mode(&mut modes, RenderMode::Ascii),
+      "off" | "none" | "text" | "chafa" | "fallback" => {
+        push_render_mode(&mut modes, RenderMode::Symbols);
+        push_render_mode(&mut modes, RenderMode::Ascii);
+      }
+      unknown => warn!(
+        env = RENDER_MODES_ENV,
+        value,
+        token = unknown,
+        "ignoring unknown render mode override"
+      ),
+    }
+  }
+
+  if modes.is_empty() {
+    warn!(
+      env = RENDER_MODES_ENV,
+      value, "render mode override did not contain any known modes"
+    );
+    None
+  } else {
+    Some(modes)
+  }
+}
+
+fn push_render_mode(modes: &mut Vec<RenderMode>, mode: RenderMode) {
+  if !modes.contains(&mode) {
+    modes.push(mode);
   }
 }
 

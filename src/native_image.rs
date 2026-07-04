@@ -7,11 +7,15 @@ use fast_image_resize::{
   images::{Image as FirImage, ImageRef as FirImageRef},
 };
 use image::{
-  DynamicImage, ExtendedColorType, GrayAlphaImage, GrayImage, ImageBuffer, ImageDecoder,
+  ColorType, DynamicImage, ExtendedColorType, GrayAlphaImage, GrayImage, ImageBuffer, ImageDecoder,
   ImageEncoder, ImageReader, RgbImage, RgbaImage,
   codecs::{jpeg::JpegEncoder, png::PngEncoder},
   imageops::FilterType,
-  metadata::Orientation,
+  metadata::{Cicp, Orientation},
+};
+use moxcms::{
+  CicpColorPrimaries, ColorProfile, DataColorSpace, Layout, TransferCharacteristics,
+  TransformOptions,
 };
 use palette::{Srgb, cast::ComponentsAs};
 use quantette::{
@@ -190,12 +194,90 @@ fn decode_image(path: &Path) -> Result<DecodedImage> {
     .with_context(|| format!("failed to decode {}", path.display()))?;
   let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
   let size = decoder.dimensions();
-  let image = DynamicImage::from_decoder(decoder)
+  let image = decode_image_pixels(decoder)
     .with_context(|| format!("failed to read image pixels from {}", path.display()))?;
   Ok(DecodedImage {
     image,
     orientation,
     size,
+  })
+}
+
+fn decode_image_pixels(mut decoder: impl ImageDecoder) -> Result<DynamicImage> {
+  if let Some(layout) = color_type_to_moxcms_layout(decoder.color_type())
+    && let Some(icc) = decoder.icc_profile().unwrap_or_default()
+    && let Ok(profile) = ColorProfile::new_from_slice(&icc)
+    && icc_requires_transform(&profile)
+  {
+    let (width, height) = decoder.dimensions();
+    let total_bytes = usize::try_from(decoder.total_bytes()).context("image is too large")?;
+    let mut pixels = vec![0_u8; total_bytes];
+    decoder.read_image(&mut pixels)?;
+
+    let transform = profile
+      .create_transform_8bit(
+        layout,
+        &ColorProfile::new_srgb(),
+        layout,
+        TransformOptions::default(),
+      )
+      .context("failed to create ICC transform")?;
+
+    let mut converted = vec![0_u8; pixels.len()];
+    transform
+      .transform(&pixels, &mut converted)
+      .context("failed to transform image ICC profile")?;
+
+    let mut image = image_from_moxcms_pixels(layout, width, height, converted)?;
+    image.set_rgb_primaries(Cicp::SRGB.primaries);
+    image.set_transfer_function(Cicp::SRGB.transfer);
+    Ok(image)
+  } else {
+    Ok(DynamicImage::from_decoder(decoder)?)
+  }
+}
+
+fn color_type_to_moxcms_layout(color_type: ColorType) -> Option<Layout> {
+  match color_type {
+    ColorType::L8 => Some(Layout::Gray),
+    ColorType::La8 => Some(Layout::GrayAlpha),
+    ColorType::Rgb8 => Some(Layout::Rgb),
+    ColorType::Rgba8 => Some(Layout::Rgba),
+    _ => None,
+  }
+}
+
+fn image_from_moxcms_pixels(
+  layout: Layout,
+  width: u32,
+  height: u32,
+  pixels: Vec<u8>,
+) -> Result<DynamicImage> {
+  match layout {
+    Layout::Gray => GrayImage::from_raw(width, height, pixels)
+      .map(DynamicImage::ImageLuma8)
+      .context("converted grayscale buffer has an invalid size"),
+    Layout::GrayAlpha => GrayAlphaImage::from_raw(width, height, pixels)
+      .map(DynamicImage::ImageLumaA8)
+      .context("converted grayscale-alpha buffer has an invalid size"),
+    Layout::Rgb => RgbImage::from_raw(width, height, pixels)
+      .map(DynamicImage::ImageRgb8)
+      .context("converted RGB buffer has an invalid size"),
+    Layout::Rgba => RgbaImage::from_raw(width, height, pixels)
+      .map(DynamicImage::ImageRgba8)
+      .context("converted RGBA buffer has an invalid size"),
+    _ => bail!("unsupported ICC conversion pixel layout"),
+  }
+}
+
+fn icc_requires_transform(profile: &ColorProfile) -> bool {
+  if profile.color_space == DataColorSpace::Cmyk {
+    return false;
+  }
+
+  profile.cicp.is_none_or(|cicp| {
+    cicp.color_primaries != CicpColorPrimaries::Bt709
+      || cicp.transfer_characteristics != TransferCharacteristics::Srgb
   })
 }
 

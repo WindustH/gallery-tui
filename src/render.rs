@@ -681,7 +681,7 @@ fn decompress_zstd(payload: Vec<u8>) -> std::io::Result<Vec<u8>> {
 }
 
 fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
-  hasher.update(b"render-v5");
+  hasher.update(b"render-v6");
   hasher.update([0]);
   hasher.update(config.chafa_bin.as_bytes());
   hasher.update([0]);

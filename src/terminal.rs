@@ -108,7 +108,7 @@ impl Tui {
     for removed_overlay in &removed {
       if !added
         .iter()
-        .any(|added_overlay| rects_intersect(removed_overlay.area, added_overlay.area))
+        .any(|added_overlay| rect_contains(added_overlay.area, removed_overlay.area))
       {
         self.pending_protocol_clears.push(removed_overlay.area);
       }
@@ -219,16 +219,21 @@ impl Tui {
       clear_protocol_area(backend, area)?;
     }
     backend.flush()?;
+    self.terminal.swap_buffers();
+    self.protocol_state.clear();
     Ok(())
   }
 }
 
-fn rects_intersect(a: ratatui::layout::Rect, b: ratatui::layout::Rect) -> bool {
-  let a_right = a.x.saturating_add(a.width);
-  let a_bottom = a.y.saturating_add(a.height);
-  let b_right = b.x.saturating_add(b.width);
-  let b_bottom = b.y.saturating_add(b.height);
-  a.x < b_right && b.x < a_right && a.y < b_bottom && b.y < a_bottom
+fn rect_contains(outer: ratatui::layout::Rect, inner: ratatui::layout::Rect) -> bool {
+  let outer_right = outer.x.saturating_add(outer.width);
+  let outer_bottom = outer.y.saturating_add(outer.height);
+  let inner_right = inner.x.saturating_add(inner.width);
+  let inner_bottom = inner.y.saturating_add(inner.height);
+  outer.x <= inner.x
+    && outer.y <= inner.y
+    && outer_right >= inner_right
+    && outer_bottom >= inner_bottom
 }
 
 fn move_to_protocol_area(

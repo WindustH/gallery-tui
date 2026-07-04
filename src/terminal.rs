@@ -21,6 +21,7 @@ use crate::{
 pub struct Tui {
   terminal: Terminal<CrosstermBackend<Stderr>>,
   protocol_state: Vec<ProtocolOverlayState>,
+  pending_protocol_clears: Vec<ratatui::layout::Rect>,
   protocol_reset: Option<String>,
   suspended: bool,
   restored: bool,
@@ -51,6 +52,7 @@ impl Tui {
     Ok(Self {
       terminal,
       protocol_state: Vec::new(),
+      pending_protocol_clears: Vec::new(),
       protocol_reset,
       suspended: false,
       restored: false,
@@ -61,6 +63,7 @@ impl Tui {
   where
     F: FnOnce(&mut Frame),
   {
+    self.clear_pending_protocol_areas()?;
     self.terminal.draw(render)?;
     Ok(())
   }
@@ -102,6 +105,14 @@ impl Tui {
       .map(|(_, overlay)| *overlay)
       .collect::<Vec<_>>();
 
+    for removed_overlay in &removed {
+      if !added
+        .iter()
+        .any(|added_overlay| rects_intersect(removed_overlay.area, added_overlay.area))
+      {
+        self.pending_protocol_clears.push(removed_overlay.area);
+      }
+    }
     let backend = self.terminal.backend_mut();
     erase_protocol_state(backend, &removed)?;
     for overlay in added {
@@ -121,6 +132,7 @@ impl Tui {
   }
 
   pub fn clear_protocol_overlays(&mut self) -> Result<()> {
+    self.pending_protocol_clears.clear();
     let old_state = std::mem::take(&mut self.protocol_state);
     if old_state.is_empty() {
       return Ok(());
@@ -138,6 +150,7 @@ impl Tui {
     if self.restored {
       return Ok(());
     }
+    self.pending_protocol_clears.clear();
     let old_state = std::mem::take(&mut self.protocol_state);
     let backend = self.terminal.backend_mut();
     erase_protocol_state(backend, &old_state)?;
@@ -161,6 +174,7 @@ impl Tui {
     if self.suspended {
       return Ok(());
     }
+    self.pending_protocol_clears.clear();
     let old_state = std::mem::take(&mut self.protocol_state);
     let backend = self.terminal.backend_mut();
     erase_protocol_state(backend, &old_state)?;
@@ -190,9 +204,31 @@ impl Tui {
     )?;
     self.terminal.clear()?;
     reset_protocol_images(self.terminal.backend_mut(), self.protocol_reset.as_deref())?;
+    self.pending_protocol_clears.clear();
     self.suspended = false;
     Ok(())
   }
+
+  fn clear_pending_protocol_areas(&mut self) -> Result<()> {
+    let areas = std::mem::take(&mut self.pending_protocol_clears);
+    if areas.is_empty() {
+      return Ok(());
+    }
+    let backend = self.terminal.backend_mut();
+    for area in areas {
+      clear_protocol_area(backend, area)?;
+    }
+    backend.flush()?;
+    Ok(())
+  }
+}
+
+fn rects_intersect(a: ratatui::layout::Rect, b: ratatui::layout::Rect) -> bool {
+  let a_right = a.x.saturating_add(a.width);
+  let a_bottom = a.y.saturating_add(a.height);
+  let b_right = b.x.saturating_add(b.width);
+  let b_bottom = b.y.saturating_add(b.height);
+  a.x < b_right && b.x < a_right && a.y < b_bottom && b.y < a_bottom
 }
 
 fn move_to_protocol_area(
@@ -275,7 +311,7 @@ fn write_kitty_unicode_placeholders(
   let red = (image_id >> 16) & 0xff;
   let green = (image_id >> 8) & 0xff;
   let blue = image_id & 0xff;
-  write!(backend, "\x1b[38;2;{red};{green};{blue}m")?;
+  write!(backend, "\x1b[0m\x1b[38;2;{red};{green};{blue}m")?;
 
   for y in 0..area.height {
     execute!(backend, MoveTo(area.x, area.y.saturating_add(y)))?;

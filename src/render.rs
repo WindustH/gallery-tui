@@ -463,8 +463,8 @@ fn decode_rendered(
   if mode.is_protocol() {
     let fingerprint = render_fingerprint(&bytes);
     let data = String::from_utf8(bytes).map_err(|err| err.to_string())?;
-    let placement = match (mode, native_config.passthrough.as_deref(), image_id) {
-      (RenderMode::Kitty, Some("tmux"), Some(image_id)) => {
+    let placement = match (mode, native_config.kitty_unicode_placeholders, image_id) {
+      (RenderMode::Kitty, true, Some(image_id)) => {
         Some(ProtocolPlacement::KittyUnicode { image_id })
       }
       _ => None,
@@ -713,6 +713,8 @@ fn hash_native_config(hasher: &mut Sha256, config: &NativeImageConfig) {
   if let Some(passthrough) = &config.passthrough {
     hasher.update(passthrough.as_bytes());
   }
+  hasher.update([0]);
+  hasher.update([u8::from(config.kitty_unicode_placeholders)]);
   hasher.update([0]);
 }
 

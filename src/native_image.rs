@@ -27,6 +27,7 @@ use crate::capability::RenderMode;
 pub struct NativeImageConfig {
   pub cell_pixels: Option<(u16, u16)>,
   pub passthrough: Option<String>,
+  pub kitty_unicode_placeholders: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +102,7 @@ pub async fn render_prepared(
         image,
         &envelope,
         image_id.unwrap_or(1),
-        config.passthrough.as_deref() == Some("tmux"),
+        config.kitty_unicode_placeholders,
       )
       .await
     }

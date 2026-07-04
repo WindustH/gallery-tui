@@ -273,16 +273,27 @@ impl TerminalCapability {
       _ => None,
     }
   }
+
+  pub fn kitty_unicode_placeholders(&self) -> bool {
+    matches!(self.brand.as_deref(), Some("kitty" | "ghostty" | "rio"))
+  }
 }
 
 pub fn detect() -> TerminalCapability {
-  let term = env::var("TERM").ok();
-  let term_program = env::var("TERM_PROGRAM").ok();
+  let env_term = env::var("TERM").ok();
+  let env_term_program = env::var("TERM_PROGRAM").ok();
   let colorterm = env::var("COLORTERM").ok();
   let multiplexer = detect_multiplexer();
   if multiplexer.as_deref() == Some("tmux") {
     enable_tmux_passthrough();
   }
+  let (mux_term, mux_term_program) = multiplexer
+    .as_deref()
+    .filter(|multiplexer| *multiplexer == "tmux")
+    .map(|_| tmux_term_program())
+    .unwrap_or_default();
+  let term = mux_term.or(env_term);
+  let term_program = mux_term_program.or(env_term_program);
   let env_brand = detect_brand_from_env(term.as_deref(), term_program.as_deref());
   let needs_identity_probe = env_brand.is_none() && multiplexer.as_deref() != Some("zellij");
   let requests = ProbeRequests {
@@ -352,6 +363,30 @@ pub fn detect() -> TerminalCapability {
     color_level,
     cell_pixels,
   }
+}
+
+fn tmux_term_program() -> (Option<String>, Option<String>) {
+  let output = Command::new("tmux").arg("show-environment").output();
+  let Ok(output) = output else {
+    return (None, None);
+  };
+
+  let mut term = None;
+  let mut term_program = None;
+  for line in String::from_utf8_lossy(&output.stdout).lines() {
+    let Some((key, value)) = line.trim().split_once('=') else {
+      continue;
+    };
+    match key {
+      "TERM" => term = Some(value.to_string()),
+      "TERM_PROGRAM" => term_program = Some(value.to_string()),
+      _ => {}
+    }
+    if term.is_some() && term_program.is_some() {
+      break;
+    }
+  }
+  (term, term_program)
 }
 
 fn enable_tmux_passthrough() {

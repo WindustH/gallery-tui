@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use crossterm::event::Event;
-use ratatui::{layout::Rect, text::Text};
+use img_tui::{ProtocolPlacement, RenderMode};
+use ratatui::text::Text;
 
 use crate::{
   cache::CacheCleanupReport,
-  capability::RenderMode,
   metadata::MetadataEdit,
   model::{ImageItem, SortSpec},
 };
@@ -40,21 +40,6 @@ pub enum RenderedImage {
     fingerprint: u64,
     erase: Option<String>,
   },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProtocolPlacement {
-  KittyUnicode { image_id: u32 },
-}
-
-#[derive(Debug, Clone)]
-pub struct ProtocolOverlay {
-  pub area: Rect,
-  pub mode: RenderMode,
-  pub data: String,
-  pub placement: Option<ProtocolPlacement>,
-  pub fingerprint: u64,
-  pub erase: Option<String>,
 }
 
 #[derive(Debug)]

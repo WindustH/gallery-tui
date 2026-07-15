@@ -1,35 +1,38 @@
 [package]
 name = "gallery-tui"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "A terminal image gallery powered by ratatui and chafa"
 
+[workspace]
+members = [
+  ".",
+  "crates/framework-tui",
+  "crates/img-tui",
+]
+resolver = "3"
+
 [dependencies]
 ansi-to-tui = "8.0.1"
 anyhow = "1.0.103"
-base64 = "0.22.1"
 chrono = "0.4.45"
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "6.0.0"
-fast_image_resize = "6.0.0"
+framework-tui = { path = "crates/framework-tui" }
 hex = "0.4.3"
 humansize = "2.1.3"
 image = "0.25.10"
+img-tui = { path = "crates/img-tui" }
 kamadak-exif = "0.6.1"
 libc = "0.2.186"
-moxcms = "0.8.1"
-palette = "0.7.6"
-quantette = "0.6.0"
 ratatui = "0.30.2"
-rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.11.0"
 tokio = { version = "1.52.3", features = ["full"] }
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-unicode-width = "0.2.2"
 walkdir = "2.5.0"
 zstd = { version = "0.13.3", features = ["zstdmt"] }

@@ -11,10 +11,11 @@ use tokio::sync::mpsc;
 use crate::{
   app::App,
   config::EffectiveLayoutConfig,
-  event::{AsyncEvent, ProtocolOverlay, RenderedImage},
+  event::{AsyncEvent, RenderedImage},
   model::ImageItem,
   render::RenderStore,
 };
+use img_tui::ProtocolOverlay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImageAlignment {

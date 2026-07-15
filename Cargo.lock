@@ -879,6 +879,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "framework-tui"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "unicode-width",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -910,33 +919,28 @@ dependencies = [
 
 [[package]]
 name = "gallery-tui"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
- "base64",
  "chrono",
  "clap",
  "crossterm",
  "dirs",
- "fast_image_resize",
+ "framework-tui",
  "hex",
  "humansize",
  "image",
+ "img-tui",
  "kamadak-exif",
  "libc",
- "moxcms",
- "palette",
- "quantette",
  "ratatui",
- "rayon",
  "serde",
  "sha2 0.11.0",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
- "unicode-width",
  "walkdir",
  "zstd",
 ]
@@ -1120,6 +1124,25 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error",
+]
+
+[[package]]
+name = "img-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "crossterm",
+ "fast_image_resize",
+ "image",
+ "libc",
+ "moxcms",
+ "palette",
+ "quantette",
+ "ratatui",
+ "rayon",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

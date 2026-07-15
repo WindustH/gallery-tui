@@ -6,6 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use framework_tui::{KeyBindingConfig, KeyBindings};
+use img_tui::TerminalCapability;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -653,7 +655,7 @@ impl Default for RenderConfig {
 }
 
 impl RenderConfig {
-  pub fn apply_terminal_capability(&mut self, capability: &crate::capability::TerminalCapability) {
+  pub fn apply_terminal_capability(&mut self, capability: &TerminalCapability) {
     self.chafa_args.retain(|arg| {
       !arg.starts_with("--format=")
         && !arg.starts_with("--colors=")
@@ -786,12 +788,39 @@ impl Default for KeymapConfig {
 }
 
 impl KeymapConfig {
+  pub fn bindings(&self) -> KeyBindings {
+    KeyBindings::from_sections(
+      binding_configs(&self.browser.keymap),
+      binding_configs(&self.detail.keymap),
+      binding_configs(&self.input.keymap),
+      binding_configs(&self.global.keymap),
+    )
+  }
+
   fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
     append_missing_actions(&mut self.browser.keymap, &default.browser.keymap);
     append_missing_actions(&mut self.detail.keymap, &default.detail.keymap);
     append_missing_actions(&mut self.input.keymap, &default.input.keymap);
     append_missing_actions(&mut self.global.keymap, &default.global.keymap);
+  }
+}
+
+fn binding_configs(entries: &[KeymapEntry]) -> Vec<KeyBindingConfig> {
+  entries
+    .iter()
+    .map(|entry| KeyBindingConfig {
+      on: keymap_on_values(&entry.on),
+      action: entry.run.clone(),
+      desc: entry.desc.clone(),
+    })
+    .collect()
+}
+
+fn keymap_on_values(on: &KeymapOn) -> Vec<String> {
+  match on {
+    KeymapOn::One(value) => vec![value.clone()],
+    KeymapOn::Many(values) => values.clone(),
   }
 }
 

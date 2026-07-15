@@ -4,9 +4,9 @@ use tracing::warn;
 
 use crate::{
   event::{AsyncEvent, MetadataWriteOutcome},
-  keymap::{KeyContext, MatchResult, key_event_to_token},
   metadata,
 };
+use framework_tui::{KeyContext, MatchResult, key_event_to_token};
 
 use super::{
   App, ConfirmDialog, EditorRequest, Prompt, ViewMode, action_is_layout_command,
@@ -103,36 +103,12 @@ impl App {
   }
 
   fn handle_key_token(&mut self, token: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let mut sequence = self.pending_keys.clone();
-    sequence.push(token.clone());
-    match self.keymap.match_sequence(self.key_context(), &sequence) {
+    let context = self.key_context();
+    match self.key_dispatcher.dispatch(&self.keymap, context, token) {
       MatchResult::Action(action) => {
-        self.pending_keys.clear();
-        self.hints.clear();
         self.handle_action(&action, tx);
       }
-      MatchResult::Prefix(hints) => {
-        self.pending_keys = sequence;
-        self.hints = hints;
-      }
-      MatchResult::None if !self.pending_keys.is_empty() => {
-        self.pending_keys.clear();
-        self.hints.clear();
-        match self
-          .keymap
-          .match_sequence(self.key_context(), std::slice::from_ref(&token))
-        {
-          MatchResult::Action(action) => self.handle_action(&action, tx),
-          MatchResult::Prefix(hints) => {
-            self.pending_keys = vec![token];
-            self.hints = hints;
-          }
-          MatchResult::None => {}
-        }
-      }
-      MatchResult::None => {
-        self.hints.clear();
-      }
+      MatchResult::Prefix(_) | MatchResult::None => {}
     }
   }
 
@@ -238,16 +214,15 @@ impl App {
     let Some(file_name) = self.current().map(|item| item.file_name.clone()) else {
       return;
     };
-    self.command_completion = None;
-    let mut prompt = Prompt::rename(file_name);
+    self.command_state.clear_completion();
+    let mut prompt = Prompt::text("rename: ", file_name);
     let cursor = rename_cursor_position(&prompt.buffer().input);
     prompt.buffer_mut().cursor = cursor;
     self.prompt = Some(prompt);
   }
 
   fn start_command(&mut self) {
-    self.command_history_index = None;
-    self.command_history_draft = None;
+    self.command_state.reset_history_cursor();
     self.prompt = Some(Prompt::command(String::new()));
     self.refresh_command_completion();
   }

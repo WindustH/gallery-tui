@@ -11,8 +11,7 @@ impl App {
         self.view = ViewMode::Browser;
       }
     } else {
-      self.pending_keys.clear();
-      self.hints.clear();
+      self.key_dispatcher.clear();
     }
   }
 
@@ -145,8 +144,7 @@ impl App {
 
     if let Some(index) = target.filter(|index| *index < self.images.len()) {
       self.focused = index;
-      self.pending_keys.clear();
-      self.hints.clear();
+      self.key_dispatcher.clear();
       self.ensure_focus_visible();
     }
   }

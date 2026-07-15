@@ -136,11 +136,7 @@ impl App {
 
   pub(super) fn submit_command(&mut self, input: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
     let command = input.trim().trim_start_matches(':').trim().to_string();
-    if !command.is_empty() && self.command_history.last() != Some(&command) {
-      self.command_history.push(command.clone());
-    }
-    self.command_history_index = None;
-    self.command_history_draft = None;
+    self.command_state.push_history(command.clone());
     self.execute_command(command, tx);
   }
 

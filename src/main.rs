@@ -1,14 +1,11 @@
 mod app;
 mod cache;
-mod capability;
 mod config;
 mod event;
-mod keymap;
 mod layout;
 mod logging;
 mod metadata;
 mod model;
-mod native_image;
 mod render;
 mod scanner;
 mod terminal;
@@ -34,13 +31,12 @@ use tokio::sync::mpsc;
 
 use crate::{
   app::{App, EditorRequest},
-  capability::RenderMode,
   event::AsyncEvent,
   model::sort_images,
-  native_image::NativeImageConfig,
   render::RenderStore,
   terminal::Tui,
 };
+use img_tui::{NativeImageConfig, RenderMode, capability, native_image};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -157,11 +153,7 @@ async fn main() -> Result<()> {
 
   let mut tui = Tui::new(protocol_reset)?;
   loop {
-    if app.confirm.is_some() {
-      tui.clear_protocol_overlays()?;
-    }
     tui.draw(|frame| ui::draw(frame, &mut app, &mut renderer, &tx))?;
-    tui.render_protocol_overlays(&app.protocol_overlays)?;
     if app.should_quit() {
       break;
     }

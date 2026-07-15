@@ -14,11 +14,13 @@ use tokio::sync::mpsc;
 use crate::{
   app::{App, DetailPage, ViewMode},
   config::{EffectiveLayoutConfig, ThemeConfig},
-  event::{AsyncEvent, ProtocolOverlay},
+  event::AsyncEvent,
   layout::{compute_browser_layout, screen_rect},
   model::ImageItem,
   render::RenderStore,
+  terminal::FrameOutput,
 };
+use img_tui::ProtocolOverlay;
 
 mod footer;
 mod image;
@@ -33,8 +35,9 @@ pub fn draw(
   app: &mut App,
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
-) {
+) -> FrameOutput {
   let mut protocol_overlays = Vec::new();
+  let mut cursor_position = None;
   let area = frame.area();
   let footer_height = footer_height(app, area.width).min(area.height);
   let chunks = Layout::default()
@@ -48,12 +51,16 @@ pub fn draw(
     ViewMode::Browser => draw_browser(frame, app, renderer, tx, main, &mut protocol_overlays),
     ViewMode::Detail => draw_detail(frame, app, renderer, tx, main, &mut protocol_overlays),
   }
-  draw_footer(frame, app, footer);
+  draw_footer(frame, app, footer, &mut cursor_position);
   draw_confirm(frame, app, area);
   if app.confirm.is_some() {
     protocol_overlays.clear();
+    cursor_position = None;
   }
-  app.protocol_overlays = protocol_overlays;
+  FrameOutput {
+    overlays: protocol_overlays,
+    cursor_position,
+  }
 }
 
 fn draw_browser(
@@ -206,6 +213,13 @@ fn draw_detail(
   area: Rect,
   protocol_overlays: &mut Vec<ProtocolOverlay>,
 ) {
+  let bg = app.settings.theme.color(&app.settings.theme.background);
+  let foreground = app.settings.theme.color(&app.settings.theme.foreground);
+  frame.render_widget(
+    Block::default().style(Style::default().bg(bg).fg(foreground)),
+    area,
+  );
+
   let Some(item) = app.current() else {
     frame.render_widget(Paragraph::new("No image selected"), area);
     return;

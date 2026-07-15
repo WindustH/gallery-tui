@@ -16,11 +16,13 @@ use tracing::{debug, warn};
 
 use crate::{
   cache,
-  capability::RenderMode,
   config::RenderConfig,
-  event::{AsyncEvent, ProtocolPlacement, RenderOutcome, RenderedImage},
+  event::{AsyncEvent, RenderOutcome, RenderedImage},
   model::ImageItem,
-  native_image::{self, NativeImageConfig},
+};
+use img_tui::{
+  NativeImageConfig, ProtocolPlacement, RenderMode,
+  native_image::{self},
 };
 
 pub struct RenderStore {

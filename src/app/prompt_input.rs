@@ -3,10 +3,8 @@ use std::collections::BTreeSet;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::{
-  event::AsyncEvent,
-  keymap::{KeyContext, MatchResult, key_event_to_token},
-};
+use crate::event::AsyncEvent;
+use framework_tui::{KeyContext, MatchResult, key_event_to_token};
 
 use super::{
   App, COMMAND_NAMES, CommandCompletion, EditorRequest, Prompt, PromptBuffer, current_word_start,
@@ -119,7 +117,7 @@ impl App {
           self.editor_request = Some(EditorRequest::Prompt {
             input: prompt.buffer().input.clone(),
           });
-          self.command_completion = None;
+          self.command_state.clear_completion();
         }
       }
       other => self.set_message(format!("unknown input action: {other}")),
@@ -128,9 +126,7 @@ impl App {
 
   fn cancel_prompt(&mut self) {
     self.prompt = None;
-    self.command_history_index = None;
-    self.command_history_draft = None;
-    self.command_completion = None;
+    self.command_state.reset_prompt_state();
     self.set_message("cancelled");
   }
 
@@ -139,9 +135,9 @@ impl App {
       return;
     }
     let prompt = self.prompt.take();
-    self.command_completion = None;
+    self.command_state.clear_completion();
     match prompt {
-      Some(Prompt::Rename { buffer }) => self.request_rename(buffer.input, tx),
+      Some(Prompt::Text { buffer, .. }) => self.request_rename(buffer.input, tx),
       Some(Prompt::Command { buffer }) => self.submit_command(buffer.input, tx),
       None => {}
     }
@@ -150,150 +146,78 @@ impl App {
   pub(super) fn command_buffer(&self) -> Option<&PromptBuffer> {
     match self.prompt.as_ref()? {
       Prompt::Command { buffer } => Some(buffer),
-      Prompt::Rename { .. } => None,
+      Prompt::Text { .. } => None,
     }
   }
 
   fn command_buffer_mut(&mut self) -> Option<&mut PromptBuffer> {
     match self.prompt.as_mut()? {
       Prompt::Command { buffer } => Some(buffer),
-      Prompt::Rename { .. } => None,
-    }
-  }
-
-  fn set_command_input(&mut self, value: String) {
-    if let Some(buffer) = self.command_buffer_mut() {
-      buffer.set_input(value);
+      Prompt::Text { .. } => None,
     }
   }
 
   pub(super) fn reset_command_history_cursor(&mut self) {
     if self.command_buffer().is_some() {
-      self.command_history_index = None;
-      self.command_history_draft = None;
+      self.command_state.reset_history_cursor();
     }
   }
 
   fn command_history_previous(&mut self) {
-    let Some(current_input) = self.command_buffer().map(|buffer| buffer.input.clone()) else {
-      return;
-    };
-    if self.command_history.is_empty() {
-      return;
+    let mut command_state = std::mem::take(&mut self.command_state);
+    if let Some(buffer) = self.command_buffer_mut() {
+      command_state.history_previous(buffer);
     }
-    let index = match self.command_history_index {
-      Some(0) => 0,
-      Some(index) => index.saturating_sub(1),
-      None => {
-        self.command_history_draft = Some(current_input);
-        self.command_history.len() - 1
-      }
-    };
-    self.command_history_index = Some(index);
-    self.set_command_input(self.command_history[index].clone());
+    self.command_state = command_state;
     self.refresh_command_completion();
   }
 
   fn command_history_next(&mut self) {
-    let Some(index) = self.command_history_index else {
-      return;
-    };
-    if index + 1 < self.command_history.len() {
-      let next = index + 1;
-      self.command_history_index = Some(next);
-      self.set_command_input(self.command_history[next].clone());
-    } else {
-      self.command_history_index = None;
-      let draft = self.command_history_draft.take().unwrap_or_default();
-      self.set_command_input(draft);
+    let mut command_state = std::mem::take(&mut self.command_state);
+    if let Some(buffer) = self.command_buffer_mut() {
+      command_state.history_next(buffer);
     }
+    self.command_state = command_state;
     self.refresh_command_completion();
   }
 
   pub(super) fn refresh_command_completion(&mut self) {
     let Some(buffer) = self.command_buffer() else {
-      self.command_completion = None;
+      self.command_state.clear_completion();
       return;
     };
     let input = buffer.input.clone();
     let cursor = buffer.cursor;
 
-    let previous = self.command_completion.clone();
-    let Some(mut completion) = self.command_completion_for(&input, cursor) else {
-      self.command_completion = None;
-      return;
-    };
-    if completion.candidates.is_empty() {
-      self.command_completion = None;
-      return;
-    }
-    if let Some(previous) = previous
-      && let Some(candidate) = previous.selected_candidate()
-      && let Some(index) = completion
-        .candidates
-        .iter()
-        .position(|value| value == candidate)
-    {
-      completion.selected = index;
-    }
-    self.command_completion = Some(completion);
+    let completion = self.command_completion_for(&input, cursor);
+    self
+      .command_state
+      .set_completion_preserving_selection(completion);
   }
 
   fn select_next_completion(&mut self) {
     self.refresh_command_completion();
-    let Some(completion) = self.command_completion.as_mut() else {
-      return;
-    };
-    if completion.candidates.is_empty() {
-      return;
-    }
-    completion.selected = (completion.selected + 1) % completion.candidates.len();
+    self.command_state.select_next_completion();
   }
 
   fn select_previous_completion(&mut self) {
     self.refresh_command_completion();
-    let Some(completion) = self.command_completion.as_mut() else {
-      return;
-    };
-    if completion.candidates.is_empty() {
-      return;
-    }
-    completion.selected =
-      (completion.selected + completion.candidates.len() - 1) % completion.candidates.len();
+    self.command_state.select_previous_completion();
   }
 
   fn complete_selected_command_candidate(&mut self) -> bool {
-    let Some(buffer) = self.command_buffer() else {
-      return false;
-    };
-    let input = buffer.input.clone();
     self.refresh_command_completion();
-    let Some(completion) = self.command_completion.clone() else {
-      return false;
+    let mut command_state = std::mem::take(&mut self.command_state);
+    let changed = if let Some(buffer) = self.command_buffer_mut() {
+      command_state.apply_completion(buffer)
+    } else {
+      false
     };
-    let Some(candidate) = completion.selected_candidate().cloned() else {
-      return false;
-    };
-    let current = input
-      .get(completion.replace_start..completion.replace_end)
-      .unwrap_or_default();
-    let mut next = input[..completion.replace_start].to_string();
-    next.push_str(&candidate);
-    if completion.append_space && !next.ends_with(' ') {
-      next.push(' ');
+    self.command_state = command_state;
+    if changed {
+      self.refresh_command_completion();
     }
-    let next_cursor = next.len();
-    next.push_str(input.get(completion.replace_end..).unwrap_or_default());
-    if next == input || (current == candidate && !completion.append_space) {
-      return false;
-    }
-    if let Some(buffer) = self.command_buffer_mut() {
-      buffer.input = next;
-      buffer.cursor = next_cursor.min(buffer.input.len());
-    }
-    self.reset_command_history_cursor();
-    self.refresh_command_completion();
-    true
+    changed
   }
 
   fn command_completion_for(&self, input: &str, cursor: usize) -> Option<CommandCompletion> {

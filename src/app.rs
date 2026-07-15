@@ -3,13 +3,12 @@ use std::{
   path::{Path, PathBuf},
 };
 
+use framework_tui::{CommandState, KeyBindings, KeyDispatcher, KeyHint};
 use ratatui::layout::Rect;
 use tracing::debug;
 
 use crate::{
   config::Settings,
-  event::ProtocolOverlay,
-  keymap::{KeyBindings, KeyHint},
   layout::BrowserLayout,
   metadata::{self, MetadataEdit},
   model::{ImageItem, SortSpec},
@@ -56,30 +55,25 @@ pub struct App {
   pub last_layout: Option<BrowserLayout>,
   pub browser_viewport: Option<Rect>,
   pub browser_view_height: u16,
-  pub hints: Vec<KeyHint>,
-  pub pending_keys: Vec<String>,
   pub prompt: Option<Prompt>,
-  pub command_history: Vec<String>,
-  pub command_completion: Option<CommandCompletion>,
   pub message: String,
   pub sort_spec: SortSpec,
   pub scan_pending: bool,
   pub cache_clear_pending: bool,
-  pub protocol_overlays: Vec<ProtocolOverlay>,
   pub terminal_cell_pixels: Option<(u16, u16)>,
   pub confirm: Option<ConfirmDialog>,
   pub detail_back_quits: bool,
   quit: bool,
   stdout_paths: Option<Vec<PathBuf>>,
   editor_request: Option<EditorRequest>,
-  command_history_index: Option<usize>,
-  command_history_draft: Option<String>,
+  command_state: CommandState,
+  key_dispatcher: KeyDispatcher,
 }
 
 impl App {
   pub fn new(root: PathBuf, settings: Settings, images: Vec<ImageItem>) -> Self {
     let sort_spec = settings.config.initial_sort_spec();
-    let keymap = KeyBindings::from_config(&settings.keymap);
+    let keymap = settings.keymap.bindings();
     Self {
       root,
       settings,
@@ -94,24 +88,19 @@ impl App {
       last_layout: None,
       browser_viewport: None,
       browser_view_height: 1,
-      hints: Vec::new(),
-      pending_keys: Vec::new(),
       prompt: None,
-      command_history: Vec::new(),
-      command_completion: None,
       message: "ready".to_string(),
       sort_spec,
       scan_pending: false,
       cache_clear_pending: false,
-      protocol_overlays: Vec::new(),
       terminal_cell_pixels: None,
       confirm: None,
       detail_back_quits: false,
       quit: false,
       stdout_paths: None,
       editor_request: None,
-      command_history_index: None,
-      command_history_draft: None,
+      command_state: CommandState::default(),
+      key_dispatcher: KeyDispatcher::default(),
     }
   }
 
@@ -125,6 +114,14 @@ impl App {
 
   pub fn take_editor_request(&mut self) -> Option<EditorRequest> {
     self.editor_request.take()
+  }
+
+  pub fn key_hints(&self) -> &[KeyHint] {
+    self.key_dispatcher.hints()
+  }
+
+  pub fn command_completion(&self) -> Option<&CommandCompletion> {
+    self.command_state.completion()
   }
 
   pub fn finish_prompt_editor_input(&mut self, result: Result<String, String>) {

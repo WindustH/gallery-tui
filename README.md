@@ -8,9 +8,9 @@ folder and displays the images as navigable cards in a TUI.
 ## Features
 
 - Scrollable image-card gallery with keyboard and mouse focus navigation.
-- Switchable grid, list, and masonry layouts through `:layout`.
+- Switchable grid, list, and masonry layouts.
 - Detail view with large image preview and filesystem/EXIF metadata.
-- Context-aware keymaps inspired by Yazi, including which-key style hints.
+- Which-key style hints.
 - Rename, select, batch path export, refresh, cache clearing, and flexible sort commands.
 - Terminal graphics support with Kitty, Sixel, iTerm2, Chafa symbols, and ASCII fallback.
 - On-demand async rendering with zstd-compressed LRU render cache.
@@ -63,4 +63,4 @@ brew install --HEAD WindustH/tap/gallery-tui
 
 ## Documentation
 
-Full documentation is organized under [doc/index.md](doc/index.md).
+[doc/index.md](doc/index.md).

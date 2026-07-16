@@ -45,6 +45,7 @@ pub(super) fn draw_rendered_image(
   protocol_overlays: &mut Vec<ProtocolOverlay>,
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
+  occlusion_areas: &[Rect],
 ) {
   if area.width == 0 || area.height == 0 {
     return;
@@ -56,6 +57,9 @@ pub(super) fn draw_rendered_image(
   }
 
   renderer.request(item, image_area.width, image_area.height, tx);
+  if rect_intersects_any(image_area, occlusion_areas) {
+    return;
+  }
   if let Some(rendered) = renderer.get(item, image_area.width, image_area.height) {
     match rendered {
       RenderedImage::Symbols { mode, text } => {
@@ -101,6 +105,17 @@ pub(super) fn draw_rendered_image(
       image_area,
     );
   }
+}
+
+fn rect_intersects_any(area: Rect, others: &[Rect]) -> bool {
+  others.iter().any(|other| rect_intersects(area, *other))
+}
+
+fn rect_intersects(left: Rect, right: Rect) -> bool {
+  left.x < right.x.saturating_add(right.width)
+    && right.x < left.x.saturating_add(left.width)
+    && left.y < right.y.saturating_add(right.height)
+    && right.y < left.y.saturating_add(left.height)
 }
 
 pub(super) fn fit_image_rect(

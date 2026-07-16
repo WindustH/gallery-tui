@@ -26,7 +26,7 @@ mod footer;
 mod image;
 mod modal;
 
-use footer::{draw_footer, footer_height};
+use footer::{completion_overlay_area, draw_command_completion, draw_footer, footer_height};
 use image::{ImageAlignment, draw_rendered_image, fit_image_rect, image_alignment_for_layout};
 use modal::{draw_confirm, draw_key_help};
 
@@ -48,6 +48,8 @@ pub fn draw(
     .split(area);
   let main = chunks[0];
   let footer = chunks[1];
+  let completion_area = completion_overlay_area(app, area, footer);
+  let occlusion_areas = completion_area.iter().copied().collect::<Vec<_>>();
 
   match app.view {
     ViewMode::Browser => draw_browser(
@@ -59,6 +61,7 @@ pub fn draw(
       &mut protocol_overlays,
       &mut preserve_overlays,
       &mut preserve_areas,
+      &occlusion_areas,
     ),
     ViewMode::Detail => draw_detail(
       frame,
@@ -69,9 +72,18 @@ pub fn draw(
       &mut protocol_overlays,
       &mut preserve_overlays,
       &mut preserve_areas,
+      &occlusion_areas,
     ),
   }
   draw_footer(frame, app, footer, &mut cursor_position);
+  if let Some(completion_area) = completion_area {
+    draw_command_completion(frame, app, completion_area);
+    protocol_overlays.retain(|overlay| !rect_intersects(overlay.area, completion_area));
+    preserve_areas.retain(|area| !rect_intersects(*area, completion_area));
+    if preserve_areas.is_empty() {
+      preserve_overlays = false;
+    }
+  }
   draw_confirm(frame, app, area);
   draw_key_help(frame, app, area);
   if app.confirm.is_some() || app.key_help {
@@ -99,6 +111,7 @@ fn draw_browser(
   protocol_overlays: &mut Vec<ProtocolOverlay>,
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
+  occlusion_areas: &[Rect],
 ) {
   let bg = app.settings.theme.color(&app.settings.theme.background);
   let foreground = app.settings.theme.color(&app.settings.theme.foreground);
@@ -109,6 +122,11 @@ fn draw_browser(
 
   let layout_config = app.settings.config.layout.effective();
   let layout = compute_browser_layout(&app.images, area, &layout_config);
+  let layout_changed = app.browser_viewport != Some(area)
+    || app
+      .last_layout
+      .as_ref()
+      .is_some_and(|previous| previous != &layout);
   app.update_browser_layout(layout.clone(), area);
 
   if app.images.is_empty() {
@@ -146,7 +164,12 @@ fn draw_browser(
       protocol_overlays,
       preserve_overlays,
       preserve_areas,
+      occlusion_areas,
     );
+  }
+  if layout_changed {
+    *preserve_overlays = false;
+    preserve_areas.clear();
   }
   preload_browser_neighbors(app, renderer, tx, &layout_config);
 }
@@ -166,6 +189,7 @@ fn draw_card(
   protocol_overlays: &mut Vec<ProtocolOverlay>,
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
+  occlusion_areas: &[Rect],
 ) {
   let theme = &app.settings.theme;
   let focused = index == app.focused;
@@ -206,6 +230,7 @@ fn draw_card(
     protocol_overlays,
     preserve_overlays,
     preserve_areas,
+    occlusion_areas,
   );
 }
 
@@ -249,6 +274,7 @@ fn draw_detail(
   protocol_overlays: &mut Vec<ProtocolOverlay>,
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
+  occlusion_areas: &[Rect],
 ) {
   let bg = app.settings.theme.color(&app.settings.theme.background);
   let foreground = app.settings.theme.color(&app.settings.theme.foreground);
@@ -278,6 +304,7 @@ fn draw_detail(
         protocol_overlays,
         preserve_overlays,
         preserve_areas,
+        occlusion_areas,
       );
       preload_detail_neighbors(app, renderer, tx, area);
     }
@@ -308,6 +335,7 @@ fn draw_detail(
         protocol_overlays,
         preserve_overlays,
         preserve_areas,
+        occlusion_areas,
       );
       preload_detail_neighbors(app, renderer, tx, preview);
       draw_metadata(frame, app, item, split[1]);
@@ -466,6 +494,10 @@ fn clear_row(frame: &mut Frame, area: Rect, y: u16, style: Style) {
 }
 
 fn draw_label(frame: &mut Frame, label: &str, area: Rect, style: Style) {
+  if area.width == 0 || area.height == 0 {
+    return;
+  }
+  frame.render_widget(Block::default().style(style), area);
   let text = if area.height <= 1 {
     truncate_for_width(label, area.width as usize)
   } else {
@@ -647,4 +679,11 @@ fn card_inner_area(area: Rect, layout: &EffectiveLayoutConfig) -> Rect {
     area
   };
   safe_inner(area, layout.padding, layout.padding)
+}
+
+fn rect_intersects(left: Rect, right: Rect) -> bool {
+  left.x < right.x.saturating_add(right.width)
+    && right.x < left.x.saturating_add(left.width)
+    && left.y < right.y.saturating_add(right.height)
+    && right.y < left.y.saturating_add(left.height)
 }

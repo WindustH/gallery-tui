@@ -2,7 +2,7 @@ use ratatui::layout::Rect;
 
 use crate::{config::EffectiveLayoutConfig, model::ImageItem};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CanvasRect {
   pub x: u16,
   pub y: u32,
@@ -16,7 +16,7 @@ impl CanvasRect {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserLayout {
   pub cards: Vec<CanvasRect>,
   pub total_height: u32,

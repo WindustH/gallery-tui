@@ -16,21 +16,30 @@ use crate::app::{App, DetailPage, Prompt, ViewMode};
 pub(super) fn footer_height(app: &App, width: u16) -> u16 {
   let status = u16::from(status_visible(app));
   let prompt = u16::from(app.prompt.is_some());
-  let completion = if app.prompt.is_some() {
-    completion_rows(app.command_completion(), 5)
-  } else {
-    0
-  };
   let hints = app.key_hints();
   let which = if hints.is_empty() {
     0
   } else {
     key_hint_rows(hints.len(), which_key_columns(app, width))
   };
-  status
-    .saturating_add(prompt)
-    .saturating_add(completion)
-    .saturating_add(which)
+  status.saturating_add(prompt).saturating_add(which)
+}
+
+pub(super) fn completion_overlay_area(app: &App, screen: Rect, footer: Rect) -> Option<Rect> {
+  let rows = command_completion_rows(app);
+  if rows == 0 || footer.y <= screen.y || screen.width == 0 {
+    return None;
+  }
+  let height = rows.min(footer.y.saturating_sub(screen.y));
+  if height == 0 {
+    return None;
+  }
+  Some(Rect::new(
+    screen.x,
+    footer.y.saturating_sub(height),
+    screen.width,
+    height,
+  ))
 }
 
 pub(super) fn draw_footer(
@@ -64,14 +73,6 @@ pub(super) fn draw_footer(
     content_bottom = content_bottom.saturating_sub(1);
     let prompt_area = Rect::new(area.x, content_bottom, area.width, 1);
     draw_prompt(frame, app, prompt, prompt_area, cursor_position);
-  }
-
-  let completion_rows = command_completion_rows(app);
-  if completion_rows > 0 && content_bottom > area.y {
-    let height = completion_rows.min(content_bottom - area.y);
-    content_bottom = content_bottom.saturating_sub(height);
-    let completion_area = Rect::new(area.x, content_bottom, area.width, height);
-    draw_command_completion(frame, app, completion_area);
   }
 
   if !app.key_hints().is_empty() && area.y < content_bottom {
@@ -129,7 +130,7 @@ fn draw_prompt(
   }
 }
 
-fn draw_command_completion(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_command_completion(frame: &mut Frame, app: &App, area: Rect) {
   let Some(completion) = app.command_completion() else {
     return;
   };

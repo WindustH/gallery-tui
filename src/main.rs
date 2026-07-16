@@ -12,21 +12,20 @@ mod terminal;
 mod ui;
 
 use std::{
-  env, fs,
   io::{self, Write},
   path::{Path, PathBuf},
-  process::Command,
   sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
   },
   thread,
-  time::{Duration, SystemTime},
+  time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::event as crossterm_event;
+use framework_tui::edit_text_in_editor;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -301,48 +300,4 @@ fn discard_pending_terminal_events() {
       Ok(false) | Err(_) => break,
     }
   }
-}
-
-fn edit_text_in_editor(initial: &str, cache_dir: &std::path::Path) -> Result<String, String> {
-  let editor = env::var("EDITOR")
-    .or_else(|_| env::var("VISUAL"))
-    .unwrap_or_else(|_| "vi".to_string());
-  let editor_dir = cache_dir.join("editor");
-  fs::create_dir_all(&editor_dir).map_err(|err| err.to_string())?;
-  let nanos = SystemTime::now()
-    .duration_since(SystemTime::UNIX_EPOCH)
-    .map_err(|err| err.to_string())?
-    .as_nanos();
-  let path = editor_dir.join(format!("input-{}-{nanos}.txt", std::process::id()));
-  fs::write(&path, initial).map_err(|err| err.to_string())?;
-
-  let status = Command::new("sh")
-    .arg("-c")
-    .arg(format!(
-      "{} {}",
-      editor,
-      shell_quote(&path.display().to_string())
-    ))
-    .status()
-    .map_err(|err| err.to_string())?;
-  if !status.success() {
-    let _ = fs::remove_file(&path);
-    return Err(format!("editor exited with {status}"));
-  }
-  let edited = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-  let _ = fs::remove_file(&path);
-  Ok(edited.trim_end_matches(['\r', '\n']).to_string())
-}
-
-fn shell_quote(value: &str) -> String {
-  let mut quoted = String::from("'");
-  for ch in value.chars() {
-    if ch == '\'' {
-      quoted.push_str("'\\''");
-    } else {
-      quoted.push(ch);
-    }
-  }
-  quoted.push('\'');
-  quoted
 }

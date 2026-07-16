@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
 use crate::event::AsyncEvent;
-use framework_tui::{KeyContext, MatchResult, key_event_to_token};
+use framework_tui::{PromptInputResult, handle_prompt_key, handle_prompt_paste};
 
 use super::{
   App, COMMAND_NAMES, CommandCompletion, EditorRequest, Prompt, PromptBuffer, current_word_start,
@@ -14,10 +14,9 @@ use super::{
 impl App {
   pub(super) fn handle_prompt_paste(&mut self, value: &str) {
     if let Some(prompt) = self.prompt.as_mut() {
-      prompt.buffer_mut().insert_str(value);
+      let result = handle_prompt_paste(prompt, &mut self.command_state, value);
+      self.handle_prompt_input_result(result, None);
     }
-    self.reset_command_history_cursor();
-    self.refresh_command_completion();
   }
 
   pub(super) fn handle_prompt_key(
@@ -25,103 +24,12 @@ impl App {
     key: KeyEvent,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    if key.kind != KeyEventKind::Press {
-      return;
-    }
-
-    if let Some(token) = key_event_to_token(key) {
-      match self.keymap.match_sequence(KeyContext::Input, &[token]) {
-        MatchResult::Action(action) => {
-          self.handle_prompt_action(&action, tx);
-          return;
-        }
-        MatchResult::Prefix(_) => return,
-        MatchResult::None => {}
-      }
-    }
-
-    match key.code {
-      KeyCode::Char(ch) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().insert_char(ch);
-        }
-        self.reset_command_history_cursor();
-        self.refresh_command_completion();
-      }
-      _ => {}
-    }
-  }
-
-  fn handle_prompt_action(&mut self, action: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    match action {
-      "cancel" => self.cancel_prompt(),
-      "submit" => self.submit_prompt(tx),
-      "backspace" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().backspace();
-        }
-        self.reset_command_history_cursor();
-        self.refresh_command_completion();
-      }
-      "delete" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().delete();
-        }
-        self.reset_command_history_cursor();
-        self.refresh_command_completion();
-      }
-      "move_left" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().move_left();
-        }
-        self.refresh_command_completion();
-      }
-      "move_right" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().move_right();
-        }
-        self.refresh_command_completion();
-      }
-      "move_start" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().move_start();
-        }
-        self.refresh_command_completion();
-      }
-      "move_end" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().move_end();
-        }
-        self.refresh_command_completion();
-      }
-      "kill_before_cursor" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().kill_before_cursor();
-        }
-        self.reset_command_history_cursor();
-        self.refresh_command_completion();
-      }
-      "kill_after_cursor" => {
-        if let Some(prompt) = self.prompt.as_mut() {
-          prompt.buffer_mut().kill_after_cursor();
-        }
-        self.reset_command_history_cursor();
-        self.refresh_command_completion();
-      }
-      "completion_next" => self.select_next_completion(),
-      "completion_previous" => self.select_previous_completion(),
-      "history_previous" => self.command_history_previous(),
-      "history_next" => self.command_history_next(),
-      "edit_in_editor" => {
-        if let Some(prompt) = &self.prompt {
-          self.editor_request = Some(EditorRequest::Prompt {
-            input: prompt.buffer().input.clone(),
-          });
-          self.command_state.clear_completion();
-        }
-      }
-      other => self.set_message(format!("unknown input action: {other}")),
-    }
+    let result = if let Some(prompt) = self.prompt.as_mut() {
+      handle_prompt_key(prompt, &mut self.command_state, &self.keymap, key)
+    } else {
+      PromptInputResult::Unhandled
+    };
+    self.handle_prompt_input_result(result, Some(tx));
   }
 
   fn cancel_prompt(&mut self) {
@@ -131,15 +39,36 @@ impl App {
   }
 
   fn submit_prompt(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self.complete_selected_command_candidate() {
-      return;
-    }
     let prompt = self.prompt.take();
     self.command_state.clear_completion();
     match prompt {
       Some(Prompt::Text { buffer, .. }) => self.request_rename(buffer.input, tx),
       Some(Prompt::Command { buffer }) => self.submit_command(buffer.input, tx),
       None => {}
+    }
+  }
+
+  fn handle_prompt_input_result(
+    &mut self,
+    result: PromptInputResult,
+    tx: Option<&mpsc::UnboundedSender<AsyncEvent>>,
+  ) {
+    match result {
+      PromptInputResult::Unhandled => {}
+      PromptInputResult::Changed => self.refresh_command_completion(),
+      PromptInputResult::Cancel => self.cancel_prompt(),
+      PromptInputResult::Submit => {
+        if let Some(tx) = tx {
+          self.submit_prompt(tx);
+        }
+      }
+      PromptInputResult::EditInEditor { input } => {
+        self.editor_request = Some(EditorRequest::Prompt { input });
+        self.command_state.clear_completion();
+      }
+      PromptInputResult::UnknownAction(action) => {
+        self.set_message(format!("unknown input action: {action}"));
+      }
     }
   }
 
@@ -150,35 +79,10 @@ impl App {
     }
   }
 
-  fn command_buffer_mut(&mut self) -> Option<&mut PromptBuffer> {
-    match self.prompt.as_mut()? {
-      Prompt::Command { buffer } => Some(buffer),
-      Prompt::Text { .. } => None,
-    }
-  }
-
   pub(super) fn reset_command_history_cursor(&mut self) {
     if self.command_buffer().is_some() {
       self.command_state.reset_history_cursor();
     }
-  }
-
-  fn command_history_previous(&mut self) {
-    let mut command_state = std::mem::take(&mut self.command_state);
-    if let Some(buffer) = self.command_buffer_mut() {
-      command_state.history_previous(buffer);
-    }
-    self.command_state = command_state;
-    self.refresh_command_completion();
-  }
-
-  fn command_history_next(&mut self) {
-    let mut command_state = std::mem::take(&mut self.command_state);
-    if let Some(buffer) = self.command_buffer_mut() {
-      command_state.history_next(buffer);
-    }
-    self.command_state = command_state;
-    self.refresh_command_completion();
   }
 
   pub(super) fn refresh_command_completion(&mut self) {
@@ -193,31 +97,6 @@ impl App {
     self
       .command_state
       .set_completion_preserving_selection(completion);
-  }
-
-  fn select_next_completion(&mut self) {
-    self.refresh_command_completion();
-    self.command_state.select_next_completion();
-  }
-
-  fn select_previous_completion(&mut self) {
-    self.refresh_command_completion();
-    self.command_state.select_previous_completion();
-  }
-
-  fn complete_selected_command_candidate(&mut self) -> bool {
-    self.refresh_command_completion();
-    let mut command_state = std::mem::take(&mut self.command_state);
-    let changed = if let Some(buffer) = self.command_buffer_mut() {
-      command_state.apply_completion(buffer)
-    } else {
-      false
-    };
-    self.command_state = command_state;
-    if changed {
-      self.refresh_command_completion();
-    }
-    changed
   }
 
   fn command_completion_for(&self, input: &str, cursor: usize) -> Option<CommandCompletion> {

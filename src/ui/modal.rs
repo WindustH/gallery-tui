@@ -1,9 +1,9 @@
+use framework_tui::{PopupDialogStyle, draw_popup_dialog};
 use ratatui::{
   Frame,
   layout::Rect,
   style::{Modifier, Style},
   text::{Line, Span, Text},
-  widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{App, ConfirmDialog};
@@ -12,24 +12,10 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
   let Some(confirm) = &app.confirm else {
     return;
   };
-  if area.width < 20 || area.height < 6 {
-    return;
-  }
   let theme = &app.settings.theme;
-  let available_width = area.width.saturating_sub(4).max(1);
-  let width = available_width.min(96).max(available_width.min(40));
-  let height = area.height.saturating_sub(2).clamp(6, 12);
-  let popup = Rect::new(
-    area.x + area.width.saturating_sub(width) / 2,
-    area.y + area.height.saturating_sub(height) / 2,
-    width,
-    height,
-  );
   let style = Style::default()
     .fg(theme.color(&theme.foreground))
     .bg(theme.color(&theme.which_key_background));
-  frame.render_widget(Clear, popup);
-  frame.render_widget(Block::default().style(style), popup);
   let text = match confirm {
     ConfirmDialog::MetadataWrite { path, edit } => {
       let mut lines = vec![
@@ -70,18 +56,12 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
       Text::from(lines)
     }
   };
-  frame.render_widget(
-    Paragraph::new(text)
-      .block(
-        Block::default()
-          .borders(Borders::ALL)
-          .title("confirm")
-          .border_style(style),
-      )
-      .style(style)
-      .wrap(Wrap { trim: true }),
-    popup,
-  );
+  let popup_style = PopupDialogStyle {
+    base: style,
+    border: style,
+    ..PopupDialogStyle::default()
+  };
+  let _ = draw_popup_dialog(frame, area, "confirm", text, &popup_style);
 }
 
 fn display_file_name(path: &std::path::Path) -> String {

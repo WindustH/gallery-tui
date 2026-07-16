@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
   tracing::info!(cache_dir = %settings.cache_dir.display(), log_path = %log_path.display(), "gallery-tui starting");
   match cache::enforce_render_cache_limit(
     &settings.cache_dir,
-    settings.config.render.cache_max_bytes,
+    settings.config.render.disk_cache_max_bytes,
   )
   .await
   {
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
       after_bytes = report.after_bytes,
       removed_files = report.removed_files,
       removed_bytes = report.removed_bytes,
-      max_bytes = settings.config.render.cache_max_bytes,
+      max_bytes = settings.config.render.disk_cache_max_bytes,
       "render cache cleanup finished"
     ),
     Err(error) => tracing::warn!(%error, "render cache cleanup failed"),
@@ -192,7 +192,10 @@ async fn main() -> Result<()> {
                 }
                 AsyncEvent::Scan(outcome) => app.finish_scan(outcome),
                 AsyncEvent::Rename(outcome) => app.finish_rename(outcome),
-                AsyncEvent::CacheClear(outcome) => app.finish_cache_clear(outcome),
+                AsyncEvent::CacheClear(outcome) => {
+                    renderer.clear_memory_caches();
+                    app.finish_cache_clear(outcome);
+                }
                 AsyncEvent::ConfigSave(outcome) => app.finish_config_save(outcome),
                 AsyncEvent::MetadataWrite(outcome) => app.finish_metadata_write(outcome),
             }

@@ -96,13 +96,17 @@ Render fields:
 - `max_concurrent`: maximum concurrent render tasks
 - `chafa_threads`: Chafa threads per process
 - `preload_ahead`, `preload_behind`: preloading window around focus
-- `cache_max_bytes`: render cache size limit
+- `raw_memory_cache_max_bytes`: L1 decoded render cache size limit
+- `compressed_memory_cache_max_bytes`: L2 compressed in-memory cache size limit
+- `disk_cache_max_bytes`: L3 disk render cache size limit
 - `cache_compression_level`: zstd compression level
 - `cache_compression_threads`: zstd compression threads
 - `zellij_sixel`: `off`, `auto`, or `on`
 
 `max_concurrent` is the global render worker limit. Preloading uses the same
 limit but leaves one worker slot free for the focused image when possible.
+Cache size values use bytes. A value of `0` disables that tier's size limit.
+`cache_max_bytes` is still accepted as an old name for `disk_cache_max_bytes`.
 
 ## `[behavior]`
 

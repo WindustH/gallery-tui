@@ -60,7 +60,7 @@ pub(super) fn draw_rendered_image(
     match rendered {
       RenderedImage::Symbols { mode, text } => {
         let _mode_label = mode.label();
-        frame.render_widget(Paragraph::new(text.clone()).scroll((scroll, 0)), image_area);
+        frame.render_widget(Paragraph::new(text).scroll((scroll, 0)), image_area);
       }
       RenderedImage::Protocol {
         mode,
@@ -74,12 +74,12 @@ pub(super) fn draw_rendered_image(
         reserve_protocol_area(frame, image_area);
         protocol_overlays.push(ProtocolOverlay {
           area: image_area,
-          mode: *mode,
-          data: data.clone(),
-          refresh: refresh.clone(),
-          placement: placement.clone(),
-          fingerprint: *fingerprint,
-          erase: erase.clone(),
+          mode,
+          data,
+          refresh,
+          placement,
+          fingerprint,
+          erase,
         });
       }
     }

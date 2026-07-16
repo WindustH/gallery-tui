@@ -22,7 +22,7 @@ Lower:
 
 ```toml
 [render]
-cache_max_bytes = 268435456
+disk_cache_max_bytes = 268435456
 ```
 
 Or clear the cache from inside the TUI:

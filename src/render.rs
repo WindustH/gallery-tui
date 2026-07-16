@@ -1,9 +1,9 @@
 use std::{
-  collections::{HashMap, HashSet},
+  collections::{HashMap, HashSet, VecDeque},
   io::{Cursor, Write as IoWrite},
   path::{Path, PathBuf},
   process::Command,
-  sync::Arc,
+  sync::{Arc, Mutex},
 };
 
 use ansi_to_tui::IntoText;
@@ -30,16 +30,108 @@ pub struct RenderStore {
   config: RenderConfig,
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
-  memory: HashMap<String, RenderedImage>,
+  memory: MemoryCache<RenderedImage>,
+  compressed_memory: CompressedMemoryCache,
   failures: HashMap<String, String>,
   in_flight: HashSet<String>,
   semaphore: Arc<Semaphore>,
   preload_semaphore: Arc<Semaphore>,
 }
 
+type CompressedMemoryCache = Arc<Mutex<MemoryCache<Vec<u8>>>>;
+
 struct RenderPermits {
   _global: OwnedSemaphorePermit,
   _preload: Option<OwnedSemaphorePermit>,
+}
+
+struct MemoryCache<V> {
+  max_bytes: u64,
+  bytes: u64,
+  entries: HashMap<String, MemoryCacheEntry<V>>,
+  order: VecDeque<String>,
+}
+
+struct MemoryCacheEntry<V> {
+  value: V,
+  size: u64,
+}
+
+impl<V> MemoryCache<V> {
+  fn new(max_bytes: u64) -> Self {
+    Self {
+      max_bytes,
+      bytes: 0,
+      entries: HashMap::new(),
+      order: VecDeque::new(),
+    }
+  }
+
+  fn insert(&mut self, key: String, value: V, size: u64) {
+    if let Some(old) = self.entries.remove(&key) {
+      self.bytes = self.bytes.saturating_sub(old.size);
+      self.remove_from_order(&key);
+    }
+
+    self.bytes = self.bytes.saturating_add(size);
+    self
+      .entries
+      .insert(key.clone(), MemoryCacheEntry { value, size });
+    self.order.push_back(key);
+    self.enforce_limit();
+  }
+
+  fn remove(&mut self, key: &str) {
+    if let Some(old) = self.entries.remove(key) {
+      self.bytes = self.bytes.saturating_sub(old.size);
+      self.remove_from_order(key);
+    }
+  }
+
+  fn clear(&mut self) {
+    self.bytes = 0;
+    self.entries.clear();
+    self.order.clear();
+  }
+
+  fn contains_key(&mut self, key: &str) -> bool {
+    if !self.entries.contains_key(key) {
+      return false;
+    }
+    self.remove_from_order(key);
+    self.order.push_back(key.to_string());
+    true
+  }
+
+  fn remove_from_order(&mut self, key: &str) {
+    if let Some(index) = self.order.iter().position(|entry| entry == key) {
+      self.order.remove(index);
+    }
+  }
+
+  fn enforce_limit(&mut self) {
+    if self.max_bytes == 0 {
+      return;
+    }
+
+    while self.bytes > self.max_bytes && self.entries.len() > 1 {
+      let Some(key) = self.order.pop_front() else {
+        break;
+      };
+      if let Some(old) = self.entries.remove(&key) {
+        self.bytes = self.bytes.saturating_sub(old.size);
+      }
+    }
+  }
+}
+
+impl<V: Clone> MemoryCache<V> {
+  fn get(&mut self, key: &str) -> Option<V> {
+    let value = self.entries.get(key)?.value.clone();
+    self.remove_from_order(key);
+    self.order.push_back(key.to_string());
+    Some(value)
+  }
 }
 
 impl RenderStore {
@@ -51,12 +143,17 @@ impl RenderStore {
   ) -> Self {
     let max_concurrent = config.max_concurrent.max(1);
     let max_preloads = max_concurrent.saturating_sub(1);
+    let raw_memory_cache_max_bytes = config.raw_memory_cache_max_bytes;
+    let compressed_memory_cache_max_bytes = config.compressed_memory_cache_max_bytes;
     Self {
       cache_dir,
       config,
       native_config,
       modes,
-      memory: HashMap::new(),
+      memory: MemoryCache::new(raw_memory_cache_max_bytes),
+      compressed_memory: Arc::new(Mutex::new(MemoryCache::new(
+        compressed_memory_cache_max_bytes,
+      ))),
       failures: HashMap::new(),
       in_flight: HashSet::new(),
       semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -64,7 +161,7 @@ impl RenderStore {
     }
   }
 
-  pub fn get(&self, item: &ImageItem, width: u16, height: u16) -> Option<&RenderedImage> {
+  pub fn get(&mut self, item: &ImageItem, width: u16, height: u16) -> Option<RenderedImage> {
     let key = self.cache_key(item, width, height);
     self.memory.get(&key)
   }
@@ -109,6 +206,7 @@ impl RenderStore {
     let config = self.config.clone();
     let native_config = self.native_config.clone();
     let modes = self.modes.clone();
+    let compressed_memory = self.compressed_memory.clone();
     let tx = tx.clone();
     let semaphore = self.semaphore.clone();
 
@@ -121,6 +219,7 @@ impl RenderStore {
         config,
         native_config,
         modes,
+        compressed_memory,
         semaphore,
         permits,
       )
@@ -163,7 +262,8 @@ impl RenderStore {
     match outcome.result {
       Ok(text) => {
         self.failures.remove(&outcome.cache_key);
-        self.memory.insert(outcome.cache_key, text);
+        let size = rendered_image_size(&text);
+        self.memory.insert(outcome.cache_key, text, size);
         None
       }
       Err(error) => {
@@ -172,6 +272,13 @@ impl RenderStore {
           .insert(outcome.cache_key.clone(), error.clone());
         Some(format!("render failed: {error}"))
       }
+    }
+  }
+
+  pub fn clear_memory_caches(&mut self) {
+    self.memory.clear();
+    if let Ok(mut compressed_memory) = self.compressed_memory.lock() {
+      compressed_memory.clear();
     }
   }
 
@@ -205,6 +312,7 @@ async fn render_with_fallbacks(
   config: RenderConfig,
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
+  compressed_memory: CompressedMemoryCache,
   semaphore: Arc<Semaphore>,
   permits: Option<RenderPermits>,
 ) -> Result<RenderedImage, String> {
@@ -221,19 +329,20 @@ async fn render_with_fallbacks(
   let mut errors = Vec::new();
   let mut prepared_native = None;
   for mode in modes {
-    let cache_path = cache_dir.join(format!(
-      "{}.ansi",
-      render_cache_key(&image_path, width, height, &config, &native_config, mode)
-    ));
+    let compressed_cache_key =
+      render_cache_key(&image_path, width, height, &config, &native_config, mode);
+    let cache_path = cache_dir.join(format!("{compressed_cache_key}.ansi"));
     let rendered = if mode.is_protocol() {
       render_or_read_cache(
         image_path.clone(),
         cache_path,
+        compressed_cache_key,
         width,
         height,
         config.clone(),
         native_config.clone(),
         mode,
+        compressed_memory.clone(),
         Some(&mut prepared_native),
       )
       .await
@@ -241,11 +350,13 @@ async fn render_with_fallbacks(
       render_or_read_cache(
         image_path.clone(),
         cache_path,
+        compressed_cache_key,
         width,
         height,
         config.clone(),
         native_config.clone(),
         mode,
+        compressed_memory.clone(),
         None,
       )
       .await
@@ -268,15 +379,52 @@ async fn render_with_fallbacks(
 async fn render_or_read_cache(
   image_path: PathBuf,
   cache_path: PathBuf,
+  compressed_cache_key: String,
   width: u16,
   height: u16,
   config: RenderConfig,
   native_config: NativeImageConfig,
   mode: RenderMode,
+  compressed_memory: CompressedMemoryCache,
   prepared_native: Option<&mut Option<Result<native_image::PreparedNativeImage, String>>>,
 ) -> Result<RenderedImage, String> {
   let image_id = kitty_image_id(&image_path, width, height, mode);
   let placement_id = kitty_placement_id(mode, image_id);
+
+  if let Some(bytes) = compressed_cache_get(&compressed_memory, &compressed_cache_key) {
+    match decode_cache_file(
+      &bytes,
+      width,
+      height,
+      native_config.cell_pixels,
+      mode,
+      image_id,
+      placement_id,
+    )
+    .await
+    {
+      Ok(decoded) => {
+        debug!(
+          path = %image_path.display(),
+          mode = mode.label(),
+          cache_tier = "compressed-memory",
+          "render cache hit"
+        );
+        return decode_rendered(
+          decoded.payload,
+          mode,
+          &native_config,
+          decoded.image_id,
+          decoded.placement_id,
+        );
+      }
+      Err(error) => {
+        debug!(cache = %cache_path.display(), error, "ignoring stale compressed memory render cache");
+        compressed_cache_remove(&compressed_memory, &compressed_cache_key);
+      }
+    }
+  }
+
   if let Ok(bytes) = fs::read(&cache_path).await {
     match decode_cache_file(
       &bytes,
@@ -290,6 +438,12 @@ async fn render_or_read_cache(
     .await
     {
       Ok(decoded) => {
+        debug!(
+          path = %image_path.display(),
+          mode = mode.label(),
+          cache_tier = "disk",
+          "render cache hit"
+        );
         if decoded.should_rewrite {
           match encode_cache_file(
             &decoded.payload,
@@ -304,6 +458,11 @@ async fn render_or_read_cache(
           .await
           {
             Ok(cached) => {
+              compressed_cache_insert(
+                &compressed_memory,
+                compressed_cache_key.clone(),
+                cached.clone(),
+              );
               if let Err(error) = fs::write(&cache_path, cached).await {
                 warn!(
                   cache = %cache_path.display(),
@@ -320,6 +479,8 @@ async fn render_or_read_cache(
               );
             }
           }
+        } else {
+          compressed_cache_insert(&compressed_memory, compressed_cache_key.clone(), bytes);
         }
         cache::touch_render_cache_entry(&cache_path).await;
         return decode_rendered(
@@ -336,11 +497,28 @@ async fn render_or_read_cache(
     }
   }
 
-  if let Some(parent) = cache_path.parent() {
-    fs::create_dir_all(parent)
-      .await
-      .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-  }
+  debug!(
+    path = %image_path.display(),
+    mode = mode.label(),
+    cache_tier = "compute",
+    "render cache miss"
+  );
+
+  let can_write_disk_cache = if let Some(parent) = cache_path.parent() {
+    match fs::create_dir_all(parent).await {
+      Ok(()) => true,
+      Err(error) => {
+        warn!(
+          cache_dir = %parent.display(),
+          %error,
+          "failed to create render cache directory"
+        );
+        false
+      }
+    }
+  } else {
+    true
+  };
 
   let bytes = if mode.is_protocol() {
     match prepared_native {
@@ -393,7 +571,8 @@ async fn render_or_read_cache(
       refresh: None,
     }
   };
-  let cached = encode_cache_file(
+
+  match encode_cache_file(
     &bytes,
     width,
     height,
@@ -404,11 +583,30 @@ async fn render_or_read_cache(
     &config,
   )
   .await
-  .map_err(|err| format!("failed to encode cache {}: {err}", cache_path.display()))?;
-  fs::write(&cache_path, cached)
-    .await
-    .map_err(|err| format!("failed to write cache {}: {err}", cache_path.display()))?;
-  cache::touch_render_cache_entry(&cache_path).await;
+  {
+    Ok(cached) => {
+      compressed_cache_insert(&compressed_memory, compressed_cache_key, cached.clone());
+      if can_write_disk_cache {
+        match fs::write(&cache_path, cached).await {
+          Ok(()) => cache::touch_render_cache_entry(&cache_path).await,
+          Err(error) => {
+            warn!(
+              cache = %cache_path.display(),
+              %error,
+              "failed to write render cache"
+            );
+          }
+        }
+      }
+    }
+    Err(error) => {
+      warn!(
+        cache = %cache_path.display(),
+        %error,
+        "failed to encode render cache"
+      );
+    }
+  }
   decode_rendered(bytes, mode, &native_config, image_id, placement_id)
 }
 
@@ -594,6 +792,44 @@ fn decode_rendered(
   } else {
     let text = bytes.data.into_text().map_err(|err| err.to_string())?;
     Ok(RenderedImage::Symbols { mode, text })
+  }
+}
+
+fn rendered_image_size(image: &RenderedImage) -> u64 {
+  match image {
+    RenderedImage::Symbols { text, .. } => text
+      .lines
+      .iter()
+      .flat_map(|line| line.spans.iter())
+      .map(|span| span.content.len() as u64)
+      .sum(),
+    RenderedImage::Protocol {
+      data,
+      refresh,
+      erase,
+      ..
+    } => {
+      data.len() as u64
+        + refresh.as_ref().map_or(0, |value| value.len() as u64)
+        + erase.as_ref().map_or(0, |value| value.len() as u64)
+    }
+  }
+}
+
+fn compressed_cache_get(cache: &CompressedMemoryCache, key: &str) -> Option<Vec<u8>> {
+  cache.lock().ok()?.get(key)
+}
+
+fn compressed_cache_insert(cache: &CompressedMemoryCache, key: String, bytes: Vec<u8>) {
+  let size = bytes.len() as u64;
+  if let Ok(mut cache) = cache.lock() {
+    cache.insert(key, bytes, size);
+  }
+}
+
+fn compressed_cache_remove(cache: &CompressedMemoryCache, key: &str) {
+  if let Ok(mut cache) = cache.lock() {
+    cache.remove(key);
   }
 }
 

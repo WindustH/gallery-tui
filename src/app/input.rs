@@ -6,7 +6,7 @@ use crate::{
   event::{AsyncEvent, MetadataWriteOutcome},
   metadata,
 };
-use framework_tui::{KeyContext, MatchResult, key_event_to_token};
+use framework_tui::{KeyContext, KeyHelpEntry, MatchResult, key_event_to_token};
 
 use super::{
   App, ConfirmDialog, EditorRequest, Prompt, ViewMode, action_is_layout_command,
@@ -15,6 +15,10 @@ use super::{
 
 impl App {
   pub fn handle_input(&mut self, input: Event, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if self.key_help {
+      self.handle_key_help_input(input);
+      return;
+    }
     if self.confirm.is_some() {
       self.handle_confirm_input(input, tx);
       return;
@@ -120,6 +124,9 @@ impl App {
   }
 
   fn action_available(&self, action: &str) -> bool {
+    if action == "help" {
+      return true;
+    }
     if action == "quit" {
       return self.view == ViewMode::Browser;
     }
@@ -196,6 +203,7 @@ impl App {
       "clear_selection" => self.clear_selection(),
       "rename" => self.start_rename(),
       "command" => self.start_command(),
+      "help" => self.show_key_help(),
       "edit_metadata" => self.start_metadata_edit(),
       "copy_paths" => {
         self.stdout_paths = Some(self.selected_or_focused_paths());
@@ -243,4 +251,56 @@ impl App {
     });
     self.set_message("editing metadata");
   }
+
+  fn show_key_help(&mut self) {
+    self.key_help = true;
+    self.key_dispatcher.clear();
+    self.set_message("key bindings");
+  }
+
+  fn handle_key_help_input(&mut self, input: Event) {
+    let Event::Key(key) = input else {
+      return;
+    };
+    let Some(token) = key_event_to_token(key) else {
+      return;
+    };
+    if matches!(token.as_str(), "f1" | "esc" | "q" | "enter") {
+      self.key_help = false;
+      self.set_message("closed key bindings");
+    }
+  }
+
+  pub fn key_help_title(&self) -> &'static str {
+    if self.prompt.is_some() {
+      return "Input key bindings";
+    }
+    match self.view {
+      ViewMode::Browser => "Browser key bindings",
+      ViewMode::Detail => "Detail key bindings",
+    }
+  }
+
+  pub fn key_help_entries(&self) -> Vec<KeyHelpEntry> {
+    if self.prompt.is_some() {
+      let command_prompt = matches!(self.prompt, Some(Prompt::Command { .. }));
+      return self
+        .keymap
+        .help_entries_filtered(KeyContext::Input, |action| {
+          input_action_available(action, command_prompt)
+        });
+    }
+
+    self
+      .keymap
+      .help_entries_filtered(self.key_context(), |action| self.action_available(action))
+  }
+}
+
+fn input_action_available(action: &str, command_prompt: bool) -> bool {
+  command_prompt
+    || !matches!(
+      action,
+      "completion_next" | "completion_previous" | "history_previous" | "history_next"
+    )
 }

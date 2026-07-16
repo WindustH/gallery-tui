@@ -66,6 +66,10 @@ impl App {
         self.editor_request = Some(EditorRequest::Prompt { input });
         self.command_state.clear_completion();
       }
+      PromptInputResult::UnknownAction(action) if action == "help" => {
+        self.key_help = true;
+        self.set_message("key bindings");
+      }
       PromptInputResult::UnknownAction(action) => {
         self.set_message(format!("unknown input action: {action}"));
       }

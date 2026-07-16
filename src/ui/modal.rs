@@ -1,4 +1,6 @@
-use framework_tui::{PopupDialogStyle, draw_popup_dialog};
+use framework_tui::{
+  KeyHelpDialogStyle, PopupDialogStyle, draw_key_help_dialog, draw_popup_dialog,
+};
 use ratatui::{
   Frame,
   layout::Rect,
@@ -62,6 +64,35 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
     ..PopupDialogStyle::default()
   };
   let _ = draw_popup_dialog(frame, area, "confirm", text, &popup_style);
+}
+
+pub(super) fn draw_key_help(frame: &mut Frame, app: &App, area: Rect) {
+  if !app.key_help {
+    return;
+  }
+  let theme = &app.settings.theme;
+  let style = Style::default()
+    .fg(theme.color(&theme.foreground))
+    .bg(theme.color(&theme.which_key_background));
+  let key_style = style
+    .fg(theme.color(&theme.which_key_key))
+    .add_modifier(Modifier::BOLD);
+  let desc_style = style.fg(theme.color(&theme.which_key_description));
+  let muted = style.fg(theme.color(&theme.muted));
+  let entries = app.key_help_entries();
+  let key_help_style = KeyHelpDialogStyle {
+    popup: PopupDialogStyle {
+      base: style,
+      border: style,
+      max_height: area.height.saturating_sub(2).clamp(8, 34),
+      ..PopupDialogStyle::default()
+    },
+    key: key_style,
+    description: desc_style,
+    muted,
+    ..KeyHelpDialogStyle::default()
+  };
+  let _ = draw_key_help_dialog(frame, area, app.key_help_title(), &entries, &key_help_style);
 }
 
 fn display_file_name(path: &std::path::Path) -> String {

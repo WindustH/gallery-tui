@@ -62,6 +62,7 @@ pub struct App {
   pub cache_clear_pending: bool,
   pub terminal_cell_pixels: Option<(u16, u16)>,
   pub confirm: Option<ConfirmDialog>,
+  pub key_help: bool,
   pub detail_back_quits: bool,
   quit: bool,
   stdout_paths: Option<Vec<PathBuf>>,
@@ -95,6 +96,7 @@ impl App {
       cache_clear_pending: false,
       terminal_cell_pixels: None,
       confirm: None,
+      key_help: false,
       detail_back_quits: false,
       quit: false,
       stdout_paths: None,
@@ -324,4 +326,11 @@ fn action_is_layout_command(action: &str) -> bool {
     .is_some_and(|command| matches!(command, "layout" | "layout-use"))
 }
 
-const COMMAND_NAMES: &[&str] = &["refresh", "clear-cache", "sort", "layout", "layout-use"];
+const COMMAND_NAMES: &[&str] = &[
+  "refresh",
+  "clear-cache",
+  "sort",
+  "layout",
+  "layout-use",
+  "help",
+];

@@ -28,7 +28,7 @@ mod modal;
 
 use footer::{draw_footer, footer_height};
 use image::{ImageAlignment, draw_rendered_image, fit_image_rect, image_alignment_for_layout};
-use modal::draw_confirm;
+use modal::{draw_confirm, draw_key_help};
 
 pub fn draw(
   frame: &mut Frame,
@@ -73,7 +73,8 @@ pub fn draw(
   }
   draw_footer(frame, app, footer, &mut cursor_position);
   draw_confirm(frame, app, area);
-  if app.confirm.is_some() {
+  draw_key_help(frame, app, area);
+  if app.confirm.is_some() || app.key_help {
     protocol_overlays.clear();
     cursor_position = None;
     preserve_overlays = false;

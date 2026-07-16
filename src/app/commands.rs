@@ -84,6 +84,10 @@ impl App {
       Some("sort") => self.execute_sort_command(parts.collect()),
       Some("layout") => self.execute_layout_command(parts.collect(), true, tx),
       Some("layout-use") => self.execute_layout_command(parts.collect(), false, tx),
+      Some("help") if parts.next().is_none() => {
+        self.key_help = true;
+        self.set_message("key bindings");
+      }
       Some("") | None => self.set_message("empty command"),
       Some(other) => self.set_message(format!("unknown command: {other}")),
     }

@@ -779,6 +779,7 @@ impl Default for KeymapConfig {
       input: default_input_keymap_section(),
       global: KeymapSection {
         keymap: vec![
+          key("f1", "help", "Show key bindings"),
           key("r", "rename", "Rename image"),
           key(":", "command", "Enter command"),
         ],
@@ -836,6 +837,7 @@ fn append_missing_actions(entries: &mut Vec<KeymapEntry>, defaults: &[KeymapEntr
 fn default_input_keymap_section() -> KeymapSection {
   KeymapSection {
     keymap: vec![
+      key("f1", "help", "Show key bindings"),
       key("esc", "cancel", "Cancel input"),
       key("enter", "submit", "Submit input"),
       key("backspace", "backspace", "Delete before cursor"),

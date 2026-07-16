@@ -145,6 +145,10 @@ impl RenderStore {
     self.request_with_permits(item, width, height, tx, Some(permits));
   }
 
+  pub fn draws_with_protocol(&self) -> bool {
+    self.modes.iter().any(|mode| mode.is_protocol())
+  }
+
   fn try_preload_permits(&self) -> Option<RenderPermits> {
     let preload = self.preload_semaphore.clone().try_acquire_owned().ok()?;
     let global = self.semaphore.clone().try_acquire_owned().ok()?;
@@ -272,6 +276,7 @@ async fn render_or_read_cache(
   prepared_native: Option<&mut Option<Result<native_image::PreparedNativeImage, String>>>,
 ) -> Result<RenderedImage, String> {
   let image_id = kitty_image_id(&image_path, width, height, mode);
+  let placement_id = kitty_placement_id(mode, image_id);
   if let Ok(bytes) = fs::read(&cache_path).await {
     match decode_cache_file(
       &bytes,
@@ -280,6 +285,7 @@ async fn render_or_read_cache(
       native_config.cell_pixels,
       mode,
       image_id,
+      placement_id,
     )
     .await
     {
@@ -292,6 +298,7 @@ async fn render_or_read_cache(
             native_config.cell_pixels,
             mode,
             decoded.image_id,
+            decoded.placement_id,
             &config,
           )
           .await
@@ -315,7 +322,13 @@ async fn render_or_read_cache(
           }
         }
         cache::touch_render_cache_entry(&cache_path).await;
-        return decode_rendered(decoded.payload, mode, &native_config, decoded.image_id);
+        return decode_rendered(
+          decoded.payload,
+          mode,
+          &native_config,
+          decoded.image_id,
+          decoded.placement_id,
+        );
       }
       Err(error) => {
         debug!(cache = %cache_path.display(), error, "ignoring stale render cache");
@@ -343,18 +356,42 @@ async fn render_or_read_cache(
           .as_ref()
           .expect("prepared native image result exists")
         {
-          Ok(prepared) => native_image::render_prepared(prepared, mode, &native_config, image_id)
-            .await
-            .map_err(|err| err.to_string())?,
+          Ok(prepared) => {
+            render_prepared_protocol(
+              prepared,
+              mode,
+              &native_config,
+              image_id,
+              placement_id,
+              width,
+              height,
+            )
+            .await?
+          }
           Err(error) => return Err(error.clone()),
         }
       }
-      None => native_image::render(&image_path, width, height, mode, &native_config, image_id)
-        .await
-        .map_err(|err| err.to_string())?,
+      None => {
+        let prepared = native_image::prepare(&image_path, width, height, native_config.cell_pixels)
+          .await
+          .map_err(|err| err.to_string())?;
+        render_prepared_protocol(
+          &prepared,
+          mode,
+          &native_config,
+          image_id,
+          placement_id,
+          width,
+          height,
+        )
+        .await?
+      }
     }
   } else {
-    run_chafa(&image_path, width, height, &config, mode).await?
+    RenderedBytes {
+      data: run_chafa(&image_path, width, height, &config, mode).await?,
+      refresh: None,
+    }
   };
   let cached = encode_cache_file(
     &bytes,
@@ -363,6 +400,7 @@ async fn render_or_read_cache(
     native_config.cell_pixels,
     mode,
     image_id,
+    placement_id,
     &config,
   )
   .await
@@ -371,7 +409,53 @@ async fn render_or_read_cache(
     .await
     .map_err(|err| format!("failed to write cache {}: {err}", cache_path.display()))?;
   cache::touch_render_cache_entry(&cache_path).await;
-  decode_rendered(bytes, mode, &native_config, image_id)
+  decode_rendered(bytes, mode, &native_config, image_id, placement_id)
+}
+
+async fn render_prepared_protocol(
+  prepared: &native_image::PreparedNativeImage,
+  mode: RenderMode,
+  native_config: &NativeImageConfig,
+  image_id: Option<u32>,
+  placement_id: Option<u32>,
+  width: u16,
+  height: u16,
+) -> Result<RenderedBytes, String> {
+  if mode == RenderMode::Kitty
+    && let Some(placement_id) = placement_id
+  {
+    let viewport = native_image::NativeImageViewport {
+      full_width_cells: width,
+      full_height_cells: height,
+      visible_width_cells: width,
+      visible_height_cells: height,
+      left_cells: 0,
+      top_cells: 0,
+    };
+    let image_id = image_id.unwrap_or(1);
+    let upload = native_image::render_prepared_kitty_upload(prepared, native_config, image_id)
+      .await
+      .map_err(|err| err.to_string())?;
+    let refresh = native_image::render_kitty_viewport_from_upload(
+      &upload,
+      viewport,
+      native_config,
+      placement_id,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(RenderedBytes {
+      data: upload.data,
+      refresh: Some(refresh),
+    })
+  } else {
+    native_image::render_prepared(prepared, mode, native_config, image_id)
+      .await
+      .map(|data| RenderedBytes {
+        data,
+        refresh: None,
+      })
+      .map_err(|err| err.to_string())
+  }
 }
 
 async fn run_chafa(
@@ -457,30 +541,58 @@ async fn run_chafa(
 }
 
 fn decode_rendered(
-  bytes: Vec<u8>,
+  bytes: RenderedBytes,
   mode: RenderMode,
   native_config: &NativeImageConfig,
   image_id: Option<u32>,
+  placement_id: Option<u32>,
 ) -> Result<RenderedImage, String> {
   if mode.is_protocol() {
-    let fingerprint = render_fingerprint(&bytes);
-    let data = String::from_utf8(bytes).map_err(|err| err.to_string())?;
-    let placement = match (mode, native_config.kitty_unicode_placeholders, image_id) {
-      (RenderMode::Kitty, true, Some(image_id)) => {
+    let fingerprint = render_fingerprint(&bytes.data);
+    let data = String::from_utf8(bytes.data).map_err(|err| err.to_string())?;
+    let refresh = bytes
+      .refresh
+      .map(String::from_utf8)
+      .transpose()
+      .map_err(|err| err.to_string())?;
+    let placement = match (
+      mode,
+      native_config.kitty_unicode_placeholders,
+      image_id,
+      placement_id,
+    ) {
+      (RenderMode::Kitty, _, Some(image_id), Some(placement_id)) => {
+        Some(ProtocolPlacement::KittyPlacement {
+          image_id,
+          placement_id,
+        })
+      }
+      (RenderMode::Kitty, true, Some(image_id), None) => {
         Some(ProtocolPlacement::KittyUnicode { image_id })
       }
       _ => None,
     };
-    let erase = native_image::erase_sequence(mode, native_config.passthrough.as_deref(), image_id);
+    let erase = if mode == RenderMode::Kitty
+      && let (Some(image_id), Some(placement_id)) = (image_id, placement_id)
+    {
+      native_image::erase_kitty_placement_sequence(
+        native_config.passthrough.as_deref(),
+        image_id,
+        placement_id,
+      )
+    } else {
+      native_image::erase_sequence(mode, native_config.passthrough.as_deref(), image_id)
+    };
     Ok(RenderedImage::Protocol {
       mode,
       data,
+      refresh,
       placement,
       fingerprint,
       erase,
     })
   } else {
-    let text = bytes.into_text().map_err(|err| err.to_string())?;
+    let text = bytes.data.into_text().map_err(|err| err.to_string())?;
     Ok(RenderedImage::Symbols { mode, text })
   }
 }
@@ -515,28 +627,42 @@ fn render_cache_key(
   hex::encode(hasher.finalize())
 }
 
-const CACHE_MAGIC: &str = "gallery-tui-cache-v6";
+const CACHE_MAGIC: &str = "gallery-tui-cache-v7";
 const LEGACY_RAW_CACHE_MAGIC: &str = "gallery-tui-cache-v4";
+const FRAMED_PAYLOAD_MAGIC: &[u8] = b"gallery-tui-rendered-bytes-v1\0";
+
+#[derive(Debug, Clone)]
+struct RenderedBytes {
+  data: Vec<u8>,
+  refresh: Option<Vec<u8>>,
+}
 
 struct DecodedCacheFile {
-  payload: Vec<u8>,
+  payload: RenderedBytes,
   image_id: Option<u32>,
+  placement_id: Option<u32>,
   should_rewrite: bool,
 }
 
 async fn encode_cache_file(
-  payload: &[u8],
+  payload: &RenderedBytes,
   width: u16,
   height: u16,
   cell_pixels: Option<(u16, u16)>,
   mode: RenderMode,
   image_id: Option<u32>,
+  placement_id: Option<u32>,
   config: &RenderConfig,
 ) -> Result<Vec<u8>, String> {
   let compression_level = config.cache_compression_level;
   let compression_threads = config.cache_compression_threads;
+  let payload_format = if payload.refresh.is_some() {
+    "framed"
+  } else {
+    "raw"
+  };
+  let payload = encode_rendered_bytes(payload)?;
   let plain_len = payload.len();
-  let payload = payload.to_vec();
   let compressed = tokio::task::spawn_blocking(move || {
     compress_zstd(payload, compression_level, compression_threads)
   })
@@ -546,11 +672,14 @@ async fn encode_cache_file(
 
   let (cell_width, cell_height) = cell_pixels.unwrap_or((0, 0));
   let mut header = format!(
-    "{CACHE_MAGIC}\nwidth={width}\nheight={height}\ncell_width={cell_width}\ncell_height={cell_height}\nmode={}\ncompression=zstd\nuncompressed_bytes={plain_len}\n",
+    "{CACHE_MAGIC}\nwidth={width}\nheight={height}\ncell_width={cell_width}\ncell_height={cell_height}\nmode={}\ncompression=zstd\npayload_format={payload_format}\nuncompressed_bytes={plain_len}\n",
     mode.label()
   );
   if let Some(image_id) = image_id {
     header.push_str(&format!("image_id={image_id}\n"));
+  }
+  if let Some(placement_id) = placement_id {
+    header.push_str(&format!("placement_id={placement_id}\n"));
   }
   header.push('\n');
   let mut out = Vec::with_capacity(header.len() + compressed.len());
@@ -566,6 +695,7 @@ async fn decode_cache_file(
   expected_cell_pixels: Option<(u16, u16)>,
   expected_mode: RenderMode,
   expected_image_id: Option<u32>,
+  expected_placement_id: Option<u32>,
 ) -> Result<DecodedCacheFile, String> {
   let header_end = bytes
     .windows(2)
@@ -587,8 +717,10 @@ async fn decode_cache_file(
   let mut cell_height = None;
   let mut mode = None;
   let mut compression = None;
+  let mut payload_format = None;
   let mut uncompressed_bytes = None;
   let mut image_id = None;
+  let mut placement_id = None;
   for line in lines {
     if let Some(value) = line.strip_prefix("width=") {
       width = value.parse::<u16>().ok();
@@ -602,10 +734,14 @@ async fn decode_cache_file(
       mode = Some(value);
     } else if let Some(value) = line.strip_prefix("compression=") {
       compression = Some(value);
+    } else if let Some(value) = line.strip_prefix("payload_format=") {
+      payload_format = Some(value);
     } else if let Some(value) = line.strip_prefix("uncompressed_bytes=") {
       uncompressed_bytes = value.parse::<usize>().ok();
     } else if let Some(value) = line.strip_prefix("image_id=") {
       image_id = value.parse::<u32>().ok();
+    } else if let Some(value) = line.strip_prefix("placement_id=") {
+      placement_id = value.parse::<u32>().ok();
     }
   }
 
@@ -635,13 +771,21 @@ async fn decode_cache_file(
       image_id, expected_image_id
     ));
   }
+  if placement_id != expected_placement_id {
+    return Err(format!(
+      "cache placement id mismatch: got {:?}, expected {:?}",
+      placement_id, expected_placement_id
+    ));
+  }
 
   let payload = &bytes[header_end + 2..];
+  let payload_format = payload_format.unwrap_or("raw");
   match compression.unwrap_or("none") {
     "none" => Ok(DecodedCacheFile {
-      payload: payload.to_vec(),
+      payload: decode_rendered_bytes(payload.to_vec(), payload_format)?,
       image_id,
-      should_rewrite: magic != CACHE_MAGIC,
+      placement_id,
+      should_rewrite: magic != CACHE_MAGIC || payload_format != "raw",
     }),
     "zstd" => {
       let expected_len = uncompressed_bytes;
@@ -660,8 +804,9 @@ async fn decode_cache_file(
         ));
       }
       Ok(DecodedCacheFile {
-        payload: decoded,
+        payload: decode_rendered_bytes(decoded, payload_format)?,
         image_id,
+        placement_id,
         should_rewrite: false,
       })
     }
@@ -682,8 +827,69 @@ fn decompress_zstd(payload: Vec<u8>) -> std::io::Result<Vec<u8>> {
   zstd::stream::decode_all(Cursor::new(payload))
 }
 
+fn encode_rendered_bytes(payload: &RenderedBytes) -> Result<Vec<u8>, String> {
+  let Some(refresh) = &payload.refresh else {
+    return Ok(payload.data.clone());
+  };
+  let data_len = u64::try_from(payload.data.len())
+    .map_err(|_| "render payload is too large to cache".to_string())?;
+  let refresh_len = u64::try_from(refresh.len())
+    .map_err(|_| "refresh payload is too large to cache".to_string())?;
+  let mut out = Vec::with_capacity(
+    FRAMED_PAYLOAD_MAGIC.len() + 16 + payload.data.len().saturating_add(refresh.len()),
+  );
+  out.extend_from_slice(FRAMED_PAYLOAD_MAGIC);
+  out.extend_from_slice(&data_len.to_le_bytes());
+  out.extend_from_slice(&refresh_len.to_le_bytes());
+  out.extend_from_slice(&payload.data);
+  out.extend_from_slice(refresh);
+  Ok(out)
+}
+
+fn decode_rendered_bytes(bytes: Vec<u8>, payload_format: &str) -> Result<RenderedBytes, String> {
+  if payload_format != "framed" {
+    return Ok(RenderedBytes {
+      data: bytes,
+      refresh: None,
+    });
+  }
+  let header_len = FRAMED_PAYLOAD_MAGIC.len() + 16;
+  if bytes.len() < header_len || !bytes.starts_with(FRAMED_PAYLOAD_MAGIC) {
+    return Err("framed render payload magic mismatch".to_string());
+  }
+  let lengths = &bytes[FRAMED_PAYLOAD_MAGIC.len()..header_len];
+  let data_len = u64::from_le_bytes(
+    lengths[0..8]
+      .try_into()
+      .map_err(|_| "render payload data length missing".to_string())?,
+  );
+  let refresh_len = u64::from_le_bytes(
+    lengths[8..16]
+      .try_into()
+      .map_err(|_| "render payload refresh length missing".to_string())?,
+  );
+  let data_len =
+    usize::try_from(data_len).map_err(|_| "render payload data length is too large".to_string())?;
+  let refresh_len = usize::try_from(refresh_len)
+    .map_err(|_| "render payload refresh length is too large".to_string())?;
+  let data_start = header_len;
+  let refresh_start = data_start.saturating_add(data_len);
+  let end = refresh_start.saturating_add(refresh_len);
+  if end != bytes.len() {
+    return Err(format!(
+      "framed render payload size mismatch: got {}, expected {}",
+      bytes.len(),
+      end
+    ));
+  }
+  Ok(RenderedBytes {
+    data: bytes[data_start..refresh_start].to_vec(),
+    refresh: Some(bytes[refresh_start..end].to_vec()),
+  })
+}
+
 fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
-  hasher.update(b"render-v6");
+  hasher.update(b"render-v7");
   hasher.update([0]);
   hasher.update(config.chafa_bin.as_bytes());
   hasher.update([0]);
@@ -706,6 +912,14 @@ fn kitty_image_id(path: &Path, width: u16, height: u16, mode: RenderMode) -> Opt
   let digest = hasher.finalize();
   let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x00ff_ffff;
   Some(image_id.max(1))
+}
+
+fn kitty_placement_id(mode: RenderMode, image_id: Option<u32>) -> Option<u32> {
+  if mode == RenderMode::Kitty {
+    image_id
+  } else {
+    None
+  }
 }
 
 fn hash_native_config(hasher: &mut Sha256, config: &NativeImageConfig) {

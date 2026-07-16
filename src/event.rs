@@ -36,6 +36,7 @@ pub enum RenderedImage {
   Protocol {
     mode: RenderMode,
     data: String,
+    refresh: Option<String>,
     placement: Option<ProtocolPlacement>,
     fingerprint: u64,
     erase: Option<String>,

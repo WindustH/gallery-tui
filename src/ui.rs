@@ -38,6 +38,8 @@ pub fn draw(
 ) -> FrameOutput {
   let mut protocol_overlays = Vec::new();
   let mut cursor_position = None;
+  let mut preserve_overlays = false;
+  let mut preserve_areas = Vec::new();
   let area = frame.area();
   let footer_height = footer_height(app, area.width).min(area.height);
   let chunks = Layout::default()
@@ -48,19 +50,43 @@ pub fn draw(
   let footer = chunks[1];
 
   match app.view {
-    ViewMode::Browser => draw_browser(frame, app, renderer, tx, main, &mut protocol_overlays),
-    ViewMode::Detail => draw_detail(frame, app, renderer, tx, main, &mut protocol_overlays),
+    ViewMode::Browser => draw_browser(
+      frame,
+      app,
+      renderer,
+      tx,
+      main,
+      &mut protocol_overlays,
+      &mut preserve_overlays,
+      &mut preserve_areas,
+    ),
+    ViewMode::Detail => draw_detail(
+      frame,
+      app,
+      renderer,
+      tx,
+      main,
+      &mut protocol_overlays,
+      &mut preserve_overlays,
+      &mut preserve_areas,
+    ),
   }
   draw_footer(frame, app, footer, &mut cursor_position);
   draw_confirm(frame, app, area);
   if app.confirm.is_some() {
     protocol_overlays.clear();
     cursor_position = None;
+    preserve_overlays = false;
+    preserve_areas.clear();
   }
-  FrameOutput {
-    overlays: protocol_overlays,
-    cursor_position,
-  }
+  let mut output = FrameOutput::new(protocol_overlays, cursor_position);
+  output.preserve_overlays = preserve_overlays;
+  output.preserve_areas = if preserve_overlays {
+    preserve_areas
+  } else {
+    Vec::new()
+  };
+  output
 }
 
 fn draw_browser(
@@ -70,6 +96,8 @@ fn draw_browser(
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
   protocol_overlays: &mut Vec<ProtocolOverlay>,
+  preserve_overlays: &mut bool,
+  preserve_areas: &mut Vec<Rect>,
 ) {
   let bg = app.settings.theme.color(&app.settings.theme.background);
   let foreground = app.settings.theme.color(&app.settings.theme.foreground);
@@ -115,6 +143,8 @@ fn draw_browser(
       bottom_visible,
       &layout_config,
       protocol_overlays,
+      preserve_overlays,
+      preserve_areas,
     );
   }
   preload_browser_neighbors(app, renderer, tx, &layout_config);
@@ -133,6 +163,8 @@ fn draw_card(
   bottom_visible: bool,
   layout_config: &EffectiveLayoutConfig,
   protocol_overlays: &mut Vec<ProtocolOverlay>,
+  preserve_overlays: &mut bool,
+  preserve_areas: &mut Vec<Rect>,
 ) {
   let theme = &app.settings.theme;
   let focused = index == app.focused;
@@ -171,6 +203,8 @@ fn draw_card(
     0,
     image_alignment_for_layout(layout_config),
     protocol_overlays,
+    preserve_overlays,
+    preserve_areas,
   );
 }
 
@@ -212,6 +246,8 @@ fn draw_detail(
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
   protocol_overlays: &mut Vec<ProtocolOverlay>,
+  preserve_overlays: &mut bool,
+  preserve_areas: &mut Vec<Rect>,
 ) {
   let bg = app.settings.theme.color(&app.settings.theme.background);
   let foreground = app.settings.theme.color(&app.settings.theme.foreground);
@@ -239,6 +275,8 @@ fn draw_detail(
         0,
         ImageAlignment::Center,
         protocol_overlays,
+        preserve_overlays,
+        preserve_areas,
       );
       preload_detail_neighbors(app, renderer, tx, area);
     }
@@ -267,6 +305,8 @@ fn draw_detail(
         0,
         ImageAlignment::Center,
         protocol_overlays,
+        preserve_overlays,
+        preserve_areas,
       );
       preload_detail_neighbors(app, renderer, tx, preview);
       draw_metadata(frame, app, item, split[1]);

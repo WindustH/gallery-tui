@@ -43,6 +43,8 @@ pub(super) fn draw_rendered_image(
   scroll: u16,
   alignment: ImageAlignment,
   protocol_overlays: &mut Vec<ProtocolOverlay>,
+  preserve_overlays: &mut bool,
+  preserve_areas: &mut Vec<Rect>,
 ) {
   if area.width == 0 || area.height == 0 {
     return;
@@ -63,6 +65,7 @@ pub(super) fn draw_rendered_image(
       RenderedImage::Protocol {
         mode,
         data,
+        refresh,
         placement,
         fingerprint,
         erase,
@@ -73,6 +76,7 @@ pub(super) fn draw_rendered_image(
           area: image_area,
           mode: *mode,
           data: data.clone(),
+          refresh: refresh.clone(),
           placement: placement.clone(),
           fingerprint: *fingerprint,
           erase: erase.clone(),
@@ -85,6 +89,11 @@ pub(super) fn draw_rendered_image(
       image_area,
     );
   } else {
+    if renderer.draws_with_protocol() {
+      *preserve_overlays = true;
+      preserve_areas.push(image_area);
+      return;
+    }
     frame.render_widget(
       Paragraph::new(rendering_text(item, index, total))
         .alignment(Alignment::Center)

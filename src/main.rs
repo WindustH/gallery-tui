@@ -29,7 +29,7 @@ use framework_tui::edit_text_in_editor;
 use tokio::sync::mpsc;
 
 use crate::{
-  app::{App, EditorRequest},
+  app::{App, EditorRequest, InputEffect},
   event::AsyncEvent,
   model::sort_images,
   render::RenderStore,
@@ -57,6 +57,8 @@ struct StartupTarget {
   focus: Option<PathBuf>,
   detail_back_quits: bool,
 }
+
+const MAX_QUEUED_EVENTS_PER_TICK: usize = 256;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -178,29 +180,20 @@ async fn main() -> Result<()> {
     }
 
     tokio::select! {
-        Some(message) = rx.recv() => {
-            match message {
-                AsyncEvent::Input { event, generation } => {
-                    if generation == input_generation.load(Ordering::SeqCst) {
-                        app.handle_input(event, &tx);
-                    }
-                }
-                AsyncEvent::Render(outcome) => {
-                    if let Some(error) = renderer.finish(outcome) {
-                        app.set_message(error);
-                    }
-                }
-                AsyncEvent::Scan(outcome) => app.finish_scan(outcome),
-                AsyncEvent::Rename(outcome) => app.finish_rename(outcome),
-                AsyncEvent::CacheClear(outcome) => {
-                    renderer.clear_memory_caches();
-                    app.finish_cache_clear(outcome);
-                }
-                AsyncEvent::ConfigSave(outcome) => app.finish_config_save(outcome),
-                AsyncEvent::MetadataWrite(outcome) => app.finish_metadata_write(outcome),
-            }
-        }
-        _ = tokio::time::sleep(Duration::from_millis(33)) => {}
+      Some(message) = rx.recv() => {
+        let effect = handle_async_event(message, &mut app, &mut renderer, &tx, &input_generation);
+        let frame_sync_navigation = app.settings.config.behavior.frame_sync_navigation;
+        drain_queued_events(
+          &mut rx,
+          &mut app,
+          &mut renderer,
+          &tx,
+          &input_generation,
+          frame_sync_navigation && effect == InputEffect::BrowseStep,
+          frame_sync_navigation,
+        );
+      }
+      _ = tokio::time::sleep(Duration::from_millis(33)) => {}
     }
   }
 
@@ -213,6 +206,94 @@ async fn main() -> Result<()> {
   }
 
   Ok(())
+}
+
+fn handle_async_event(
+  message: AsyncEvent,
+  app: &mut App,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  input_generation: &AtomicU64,
+) -> InputEffect {
+  match message {
+    AsyncEvent::Input { event, generation } => {
+      if generation == input_generation.load(Ordering::SeqCst) {
+        app.handle_input(event, tx)
+      } else {
+        InputEffect::None
+      }
+    }
+    AsyncEvent::Render(outcome) => {
+      if let Some(error) = renderer.finish(outcome) {
+        app.set_message(error);
+      }
+      InputEffect::Other
+    }
+    AsyncEvent::Scan(outcome) => {
+      app.finish_scan(outcome);
+      InputEffect::Other
+    }
+    AsyncEvent::Rename(outcome) => {
+      app.finish_rename(outcome);
+      InputEffect::Other
+    }
+    AsyncEvent::CacheClear(outcome) => {
+      renderer.clear_memory_caches();
+      app.finish_cache_clear(outcome);
+      InputEffect::Other
+    }
+    AsyncEvent::ConfigSave(outcome) => {
+      app.finish_config_save(outcome);
+      InputEffect::Other
+    }
+    AsyncEvent::MetadataWrite(outcome) => {
+      app.finish_metadata_write(outcome);
+      InputEffect::Other
+    }
+  }
+}
+
+fn drain_queued_events(
+  rx: &mut mpsc::UnboundedReceiver<AsyncEvent>,
+  app: &mut App,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  input_generation: &AtomicU64,
+  discard_browse_inputs: bool,
+  frame_sync_navigation: bool,
+) {
+  let mut discard_browse_inputs = discard_browse_inputs;
+  for _ in 0..MAX_QUEUED_EVENTS_PER_TICK {
+    if app.should_quit() || app.editor_request_pending() {
+      break;
+    }
+    let Ok(message) = rx.try_recv() else {
+      break;
+    };
+    if discard_browse_inputs
+      && queued_message_is_frame_sync_deferred_input(&message, app, input_generation)
+    {
+      continue;
+    }
+    let effect = handle_async_event(message, app, renderer, tx, input_generation);
+    if frame_sync_navigation && effect == InputEffect::BrowseStep {
+      discard_browse_inputs = true;
+    }
+  }
+}
+
+fn queued_message_is_frame_sync_deferred_input(
+  message: &AsyncEvent,
+  app: &App,
+  input_generation: &AtomicU64,
+) -> bool {
+  match message {
+    AsyncEvent::Input { event, generation } => {
+      *generation == input_generation.load(Ordering::SeqCst)
+        && app.input_deferred_by_frame_sync(event)
+    }
+    _ => false,
+  }
 }
 
 fn startup_target(input: PathBuf, browser: bool) -> Result<StartupTarget> {

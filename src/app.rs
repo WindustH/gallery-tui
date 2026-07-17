@@ -36,6 +36,13 @@ pub enum DetailPage {
   Metadata,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEffect {
+  None,
+  Other,
+  BrowseStep,
+}
+
 #[derive(Debug, Clone)]
 pub enum ConfirmDialog {
   MetadataWrite { path: PathBuf, edit: MetadataEdit },
@@ -180,6 +187,10 @@ impl App {
     let message = message.into();
     debug!(message, "status message");
     self.message = message;
+  }
+
+  pub fn editor_request_pending(&self) -> bool {
+    self.editor_request.is_some()
   }
 
   pub fn update_browser_layout(&mut self, layout: BrowserLayout, viewport: Rect) {

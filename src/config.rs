@@ -682,6 +682,7 @@ impl RenderConfig {
 pub struct BehaviorConfig {
   pub scroll_lines: u16,
   pub select_moves_focus: bool,
+  pub frame_sync_navigation: bool,
 }
 
 impl Default for BehaviorConfig {
@@ -689,6 +690,7 @@ impl Default for BehaviorConfig {
     Self {
       scroll_lines: 4,
       select_moves_focus: true,
+      frame_sync_navigation: true,
     }
   }
 }

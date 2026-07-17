@@ -9,37 +9,82 @@ use crate::{
 use framework_tui::{KeyContext, KeyHelpEntry, MatchResult, key_event_to_token};
 
 use super::{
-  App, ConfirmDialog, EditorRequest, Prompt, ViewMode, action_is_layout_command,
+  App, ConfirmDialog, EditorRequest, InputEffect, Prompt, ViewMode, action_is_layout_command,
   action_is_sort_command, rename_cursor_position, rename_file_no_replace, validate_new_file_name,
 };
 
 impl App {
-  pub fn handle_input(&mut self, input: Event, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  pub fn handle_input(
+    &mut self,
+    input: Event,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) -> InputEffect {
     if self.key_help {
       self.handle_key_help_input(input);
-      return;
+      return InputEffect::Other;
     }
     if self.confirm.is_some() {
       self.handle_confirm_input(input, tx);
-      return;
+      return InputEffect::Other;
     }
     match input {
-      Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
-      Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
+      Event::Key(key) if self.prompt.is_some() => {
+        self.handle_prompt_key(key, tx);
+        InputEffect::Other
+      }
+      Event::Paste(value) if self.prompt.is_some() => {
+        self.handle_prompt_paste(&value);
+        InputEffect::Other
+      }
       Event::Key(key) => {
         let Some(token) = key_event_to_token(key) else {
-          return;
+          return InputEffect::None;
         };
-        self.handle_key_token(token, tx);
+        self.handle_key_token(token, tx)
       }
       Event::Mouse(mouse) => match mouse.kind {
-        MouseEventKind::ScrollDown => self.handle_scroll_down(),
-        MouseEventKind::ScrollUp => self.handle_scroll_up(),
-        MouseEventKind::Down(MouseButton::Left) => self.handle_mouse_click(mouse.column, mouse.row),
-        _ => {}
+        MouseEventKind::ScrollDown => {
+          self.handle_scroll_down();
+          InputEffect::BrowseStep
+        }
+        MouseEventKind::ScrollUp => {
+          self.handle_scroll_up();
+          InputEffect::BrowseStep
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+          self.handle_mouse_click(mouse.column, mouse.row);
+          InputEffect::BrowseStep
+        }
+        _ => InputEffect::None,
       },
-      Event::Resize(_, _) => {}
-      _ => {}
+      Event::Resize(_, _) => InputEffect::Other,
+      _ => InputEffect::None,
+    }
+  }
+
+  pub fn input_deferred_by_frame_sync(&self, input: &Event) -> bool {
+    if self.key_help || self.confirm.is_some() || self.prompt.is_some() {
+      return false;
+    }
+    match input {
+      Event::Key(key) => {
+        let Some(token) = key_event_to_token(*key) else {
+          return false;
+        };
+        let mut dispatcher = self.key_dispatcher.clone();
+        match dispatcher.dispatch(&self.keymap, self.key_context(), token) {
+          MatchResult::Action(action) => self.action_is_browse_step(&action),
+          MatchResult::Prefix(_) => true,
+          MatchResult::None => false,
+        }
+      }
+      Event::Mouse(mouse) => matches!(
+        mouse.kind,
+        MouseEventKind::ScrollDown
+          | MouseEventKind::ScrollUp
+          | MouseEventKind::Down(MouseButton::Left)
+      ),
+      _ => false,
     }
   }
 
@@ -106,13 +151,15 @@ impl App {
     }
   }
 
-  fn handle_key_token(&mut self, token: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  fn handle_key_token(
+    &mut self,
+    token: String,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) -> InputEffect {
     let context = self.key_context();
     match self.key_dispatcher.dispatch(&self.keymap, context, token) {
-      MatchResult::Action(action) => {
-        self.handle_action(&action, tx);
-      }
-      MatchResult::Prefix(_) | MatchResult::None => {}
+      MatchResult::Action(action) => self.handle_action(&action, tx),
+      MatchResult::Prefix(_) | MatchResult::None => InputEffect::None,
     }
   }
 
@@ -169,19 +216,28 @@ impl App {
     }
   }
 
-  pub(super) fn handle_action(&mut self, action: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  pub(super) fn handle_action(
+    &mut self,
+    action: &str,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) -> InputEffect {
     if !self.action_available(action) {
       self.set_message(format!("not available here: {action}"));
-      return;
+      return InputEffect::Other;
     }
     if action_is_sort_command(action) {
       self.execute_command(action.to_string(), tx);
-      return;
+      return InputEffect::Other;
     }
     if action_is_layout_command(action) {
       self.execute_command(action.to_string(), tx);
-      return;
+      return InputEffect::Other;
     }
+    let effect = if self.action_is_browse_step(action) {
+      InputEffect::BrowseStep
+    } else {
+      InputEffect::Other
+    };
 
     match action {
       "quit" => self.quit = true,
@@ -216,6 +272,7 @@ impl App {
     }
 
     let _ = tx;
+    effect
   }
 
   pub(super) fn start_rename(&mut self) {
@@ -303,4 +360,22 @@ fn input_action_available(action: &str, command_prompt: bool) -> bool {
       action,
       "completion_next" | "completion_previous" | "history_previous" | "history_next"
     )
+}
+
+impl App {
+  fn action_is_browse_step(&self, action: &str) -> bool {
+    matches!(
+      action,
+      "back"
+        | "open"
+        | "move_left"
+        | "move_down"
+        | "move_up"
+        | "move_right"
+        | "page_up"
+        | "page_down"
+        | "home"
+        | "end"
+    ) || (action == "toggle_select" && self.settings.config.behavior.select_moves_focus)
+  }
 }

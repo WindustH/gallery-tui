@@ -114,3 +114,6 @@ Behavior fields:
 
 - `scroll_lines`: retained for scroll behavior compatibility
 - `select_moves_focus`: move focus to the next image after `space`
+- `frame_sync_navigation`: when true, accept at most one browser/detail
+  navigation step before the next terminal frame is drawn; set to false for
+  lower-latency repeated key handling on fast render paths

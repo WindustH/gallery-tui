@@ -3,7 +3,7 @@
 `gallery-tui` is a terminal image gallery built with Ratatui. It scans an image
 folder and displays the images as navigable cards in a TUI.
 
-![gallery-tui demo](https://github.com/user-attachments/assets/6e987e03-6748-4725-af2c-70cebdd78efd)
+https://github.com/user-attachments/assets/f69182bb-49cd-429c-825d-6cae8e5c43c1
 
 ## Features
 

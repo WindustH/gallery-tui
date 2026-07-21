@@ -6,7 +6,15 @@ Default configuration files are created on first run:
 - `~/.config/gallery-tui/keymap.toml`
 - `~/.config/gallery-tui/theme.toml`
 
-Existing files are not overwritten automatically.
+Generated `config.toml` files include comments for the available options. When
+new fields are added later, `gallery-tui` writes the missing defaults back using
+the same commented format; repeated preset fields share one explanation instead
+of duplicating the same comment for every preset.
+
+Existing files are normalized when they only miss fields introduced by a newer
+version. If a configuration file cannot be parsed or the active layout is no
+longer compatible, gallery-tui backs it up as `*.bak.<timestamp>` and writes a
+fresh default file.
 
 ## `config.toml`
 
@@ -41,12 +49,24 @@ Running `:layout` updates `active` and `active_args` in this file. Running
 Default presets:
 
 ```toml
+[layout]
+active = "grid"
+active_args = ["4", "2"]
+gap_x = 0
+gap_y = 0
+show_border = true
+padding = 1
+
 [layout.presets.grid]
 strategy = "grid"
 params = ["columns", "rows"]
 columns = 3
 rows = 2
+gap_x = 0
+gap_y = 0
 label_lines = 1
+show_border = false
+padding = 1
 
 [layout.presets.list]
 strategy = "list"
@@ -57,6 +77,7 @@ filename_position = "right"
 image_alignment = "left"
 image_ratio = 0.35
 show_border = false
+padding = 0
 
 [layout.presets.masonry]
 strategy = "masonry"
@@ -64,6 +85,8 @@ params = ["columns", "card_width"]
 columns = 0
 card_width = 34
 label_lines = 1
+show_border = false
+padding = 1
 ```
 
 Supported preset fields:
@@ -83,8 +106,9 @@ Supported preset fields:
 - `show_border`: optional preset-specific border override
 - `padding`: optional preset-specific content padding override
 
-When existing configuration files are missing fields introduced by a newer
-version, gallery-tui writes the parsed defaults back into the file.
+When an existing file only misses newer fields, gallery-tui writes the parsed
+defaults back into the file. When a file is incompatible, the old file is
+backed up and replaced with a fresh default file.
 
 ## `[render]`
 

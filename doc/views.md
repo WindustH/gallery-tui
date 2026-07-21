@@ -15,7 +15,8 @@ Supported layout strategies:
 
 Default preset behavior:
 
-- `grid`: fixed columns and visible rows, for example `:layout grid 3 3`
+- `grid`: fixed columns and visible rows. The startup default is
+  `:layout grid 4 2`
 - `list`: one column with a configured number of visible items, for example
   `:layout list 12`; the default preset uses left-aligned previews, a smaller
   image ratio, no vertical gap, and no card borders

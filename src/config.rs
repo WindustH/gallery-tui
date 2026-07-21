@@ -1,8 +1,9 @@
 use std::{
-  collections::BTreeMap,
+  collections::{BTreeMap, BTreeSet},
   env,
   fmt::Write as FmtWrite,
   path::{Path, PathBuf},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -149,7 +150,11 @@ impl LayoutPresetConfig {
       rows: 2,
       card_width: 34,
       card_height: 16,
+      gap_x: Some(0),
+      gap_y: Some(0),
       label_lines: Some(1),
+      show_border: Some(false),
+      padding: Some(1),
       ..Self::default()
     }
   }
@@ -166,6 +171,7 @@ impl LayoutPresetConfig {
       image_alignment: Some("left".to_string()),
       image_ratio: Some(0.35),
       show_border: Some(false),
+      padding: Some(0),
       ..Self::default()
     }
   }
@@ -178,6 +184,8 @@ impl LayoutPresetConfig {
       card_width: 34,
       card_height: 16,
       label_lines: Some(1),
+      show_border: Some(false),
+      padding: Some(1),
       ..Self::default()
     }
   }
@@ -212,15 +220,15 @@ fn default_layout_active() -> String {
 }
 
 fn default_layout_active_args() -> Vec<String> {
-  vec!["3".to_string(), "2".to_string()]
+  vec!["4".to_string(), "2".to_string()]
 }
 
 fn default_gap_x() -> u16 {
-  2
+  0
 }
 
 fn default_gap_y() -> u16 {
-  1
+  0
 }
 
 fn default_card_style() -> String {
@@ -1090,21 +1098,198 @@ pub fn write_app_config_sync(path: &Path, config: &AppConfig) -> Result<()> {
 }
 
 fn app_config_toml(config: &AppConfig) -> Result<String> {
-  toml::to_string_pretty(config).map_err(Into::into)
+  let body = toml::to_string_pretty(config)?;
+  Ok(add_app_config_comments(
+    &body,
+    &[
+      "gallery-tui main configuration.",
+      "Missing fields are rewritten with defaults when the app loads this file.",
+    ],
+    gallery_config_comment,
+  ))
+}
+
+fn add_app_config_comments(
+  body: &str,
+  header: &[&str],
+  comment_for: fn(&str) -> Option<&'static str>,
+) -> String {
+  let mut out = String::new();
+  let mut seen_comments = BTreeSet::new();
+  for line in header {
+    push_toml_comment(&mut out, line);
+  }
+  out.push('\n');
+
+  let mut table = String::new();
+  for line in body.lines() {
+    let trimmed = line.trim();
+    if let Some(header) = toml_table_header(trimmed) {
+      table = header.to_string();
+      let comment_key = comment_table_key(&table);
+      if seen_comments.insert(comment_key.clone()) {
+        if let Some(comment) = comment_for(&comment_key) {
+          push_toml_comment(&mut out, comment);
+        }
+      }
+    } else if let Some(key) = toml_field_key(trimmed) {
+      let comment_key = comment_field_key(&table, key);
+      if seen_comments.insert(comment_key.clone()) {
+        if let Some(comment) = comment_for(&comment_key) {
+          push_toml_comment(&mut out, comment);
+        }
+      }
+    }
+    out.push_str(line);
+    out.push('\n');
+  }
+  out
+}
+
+fn push_toml_comment(out: &mut String, comment: &str) {
+  for line in comment.lines() {
+    let _ = writeln!(out, "# {line}");
+  }
+}
+
+fn toml_table_header(line: &str) -> Option<&str> {
+  if line.starts_with("[[") {
+    return None;
+  }
+  line.strip_prefix('[')?.strip_suffix(']')
+}
+
+fn toml_field_key(line: &str) -> Option<&str> {
+  if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+    return None;
+  }
+  let (key, _) = line.split_once('=')?;
+  let key = key.trim();
+  (!key.is_empty()).then_some(key)
+}
+
+fn comment_table_key(table: &str) -> String {
+  if table.starts_with("layout.presets.") {
+    "layout.presets.*".to_string()
+  } else {
+    table.to_string()
+  }
+}
+
+fn comment_field_key(table: &str, key: &str) -> String {
+  if table.is_empty() {
+    key.to_string()
+  } else if table.starts_with("layout.presets.") {
+    format!("layout.presets.*.{key}")
+  } else {
+    format!("{table}.{key}")
+  }
+}
+
+fn gallery_config_comment(key: &str) -> Option<&'static str> {
+  match key {
+    "recursive" => Some("Scan image files in subdirectories as well as the current directory."),
+    "initial_sort" => Some(
+      "Initial browser sort order. Common values: name_asc, name_desc, modified_desc, size_asc.",
+    ),
+    "supported_extensions" => {
+      Some("File extensions treated as images, matched case-insensitively without the dot.")
+    }
+    "layout" => Some("Layout defaults and the startup preset selection."),
+    "layout.active" => Some("Layout preset selected on startup."),
+    "layout.active_args" => Some(
+      "Arguments passed to the active layout preset, in the order declared by that preset's params.",
+    ),
+    "layout.gap_x" => Some("Default horizontal gap between image cards."),
+    "layout.gap_y" => Some("Default vertical gap between image cards."),
+    "layout.card_style" => {
+      Some("Default card style. image_with_name shows the image and filename together.")
+    }
+    "layout.show_filename" => Some("Show filenames in image cards."),
+    "layout.filename_position" => Some("Default filename position: top, bottom, left, or right."),
+    "layout.image_alignment" => Some("Default image alignment inside each card: left or center."),
+    "layout.image_ratio" => {
+      Some("Default fraction of a card reserved for the image when text is also shown.")
+    }
+    "layout.label_lines" => {
+      Some("Default number of filename lines to reserve. 0 lets the layout decide.")
+    }
+    "layout.show_border" => Some("Draw borders around image cards by default."),
+    "layout.padding" => Some("Default inner padding for image cards."),
+    "layout.presets.*" => Some("Named layout preset used by the :layout command."),
+    "layout.presets.*.strategy" => {
+      Some("Layout algorithm used by this preset: grid, list, or masonry.")
+    }
+    "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
+    "layout.presets.*.columns" => Some("Default column count for grid and masonry layouts."),
+    "layout.presets.*.rows" => Some("Default row count for fixed grid layouts."),
+    "layout.presets.*.items" => Some("Default item count for list layouts."),
+    "layout.presets.*.card_width" => Some("Default card width used by this preset."),
+    "layout.presets.*.card_height" => Some("Default card height used by this preset."),
+    "layout.presets.*.gap_x" => Some("Override the global horizontal gap for this preset."),
+    "layout.presets.*.gap_y" => Some("Override the global vertical gap for this preset."),
+    "layout.presets.*.card_style" => Some("Override the global card style for this preset."),
+    "layout.presets.*.show_filename" => {
+      Some("Override whether filenames are shown for this preset.")
+    }
+    "layout.presets.*.filename_position" => Some("Override the filename position for this preset."),
+    "layout.presets.*.image_alignment" => Some("Override the image alignment for this preset."),
+    "layout.presets.*.image_ratio" => {
+      Some("Override the image-to-text size ratio for this preset.")
+    }
+    "layout.presets.*.label_lines" => {
+      Some("Override the number of filename lines reserved by this preset.")
+    }
+    "layout.presets.*.show_border" => Some("Override whether this preset draws card borders."),
+    "layout.presets.*.padding" => Some("Override the card padding for this preset."),
+    "render" => Some("Rendering, terminal graphics, preloading, and cache settings."),
+    "render.chafa_bin" => Some("Command used to render images in the terminal."),
+    "render.auto_detect" => {
+      Some("Detect terminal graphics capability and adjust Chafa arguments automatically.")
+    }
+    "render.chafa_args" => {
+      Some("Extra arguments passed to Chafa after terminal auto-detection is applied.")
+    }
+    "render.raw_memory_cache_max_bytes" => {
+      Some("Maximum RAM used for uncompressed rendered image data.")
+    }
+    "render.compressed_memory_cache_max_bytes" => {
+      Some("Maximum RAM used for compressed rendered image data.")
+    }
+    "render.disk_cache_max_bytes" => Some("Maximum disk space used for the render cache."),
+    "render.cache_compression_level" => Some("Compression level used for cached render data."),
+    "render.cache_compression_threads" => {
+      Some("Worker threads used when compressing cache entries.")
+    }
+    "render.max_concurrent" => Some("Maximum number of images rendered concurrently."),
+    "render.chafa_threads" => Some("Threads requested per Chafa render job."),
+    "render.preload_ahead" => Some("Number of images ahead of the current selection to preload."),
+    "render.preload_behind" => {
+      Some("Number of images behind the current selection to keep preloaded.")
+    }
+    "render.passthrough" => Some("Optional Chafa passthrough mode, such as tmux."),
+    "render.zellij_sixel" => Some("Zellij SIXEL handling mode."),
+    "behavior" => Some("Interactive behavior settings."),
+    "behavior.scroll_lines" => Some("Rows moved by one wheel or scroll key step."),
+    "behavior.select_moves_focus" => {
+      Some("Move keyboard focus with the selected image in browser views.")
+    }
+    "behavior.frame_sync_navigation" => Some("Keep paired frames synchronized while navigating."),
+    _ => None,
+  }
 }
 
 async fn read_or_write_keymap_default(path: &Path, default: KeymapConfig) -> Result<KeymapConfig> {
   if !path.exists() {
-    fs::write(path, format_keymap_toml(&default))
-      .await
-      .with_context(|| format!("failed to write {}", path.display()))?;
-    return Ok(default);
+    return write_keymap_default(path, default).await;
   }
   let body = fs::read_to_string(path)
     .await
     .with_context(|| format!("failed to read {}", path.display()))?;
-  let mut parsed: KeymapConfig =
-    toml::from_str(&body).with_context(|| format!("failed to parse {}", path.display()))?;
+  let mut parsed: KeymapConfig = match toml::from_str(&body) {
+    Ok(parsed) => parsed,
+    Err(_) => return backup_and_write_keymap_default(path, default).await,
+  };
   parsed.normalize_defaults();
   let normalized = format_keymap_toml(&parsed);
   write_back_if_toml_changed(path, &body, &normalized).await?;
@@ -1117,32 +1302,53 @@ where
   T: NormalizeConfigDefaults,
 {
   if !path.exists() {
-    let body = toml::to_string_pretty(&default)?;
-    fs::write(path, body)
-      .await
-      .with_context(|| format!("failed to write {}", path.display()))?;
-    let mut default = default;
-    default.normalize_defaults();
-    return Ok(default);
+    return write_default_config(path, default).await;
   }
   let body = fs::read_to_string(path)
     .await
     .with_context(|| format!("failed to read {}", path.display()))?;
-  let mut parsed: T =
-    toml::from_str(&body).with_context(|| format!("failed to parse {}", path.display()))?;
+  let mut parsed: T = match toml::from_str(&body) {
+    Ok(parsed) => parsed,
+    Err(_) => return backup_and_write_default_config(path, default).await,
+  };
   parsed.normalize_defaults();
-  let normalized = toml::to_string_pretty(&parsed)?;
+  if parsed.validate().is_err() {
+    return backup_and_write_default_config(path, default).await;
+  }
+  let normalized = parsed.to_config_toml()?;
   write_back_if_toml_changed(path, &body, &normalized).await?;
   Ok(parsed)
 }
 
 trait NormalizeConfigDefaults {
   fn normalize_defaults(&mut self);
+
+  fn validate(&self) -> Result<(), String> {
+    Ok(())
+  }
+
+  fn to_config_toml(&self) -> Result<String>
+  where
+    Self: Serialize + Sized,
+  {
+    toml::to_string_pretty(self).map_err(Into::into)
+  }
 }
 
 impl NormalizeConfigDefaults for AppConfig {
   fn normalize_defaults(&mut self) {
     AppConfig::normalize_defaults(self);
+  }
+
+  fn validate(&self) -> Result<(), String> {
+    self
+      .layout
+      .effective_for(&self.layout.active, &self.layout.active_args)?;
+    Ok(())
+  }
+
+  fn to_config_toml(&self) -> Result<String> {
+    app_config_toml(self)
   }
 }
 
@@ -1150,6 +1356,76 @@ impl NormalizeConfigDefaults for ThemeConfig {
   fn normalize_defaults(&mut self) {
     ThemeConfig::normalize_defaults(self);
   }
+}
+
+async fn write_keymap_default(path: &Path, default: KeymapConfig) -> Result<KeymapConfig> {
+  fs::write(path, format_keymap_toml(&default))
+    .await
+    .with_context(|| format!("failed to write {}", path.display()))?;
+  Ok(default)
+}
+
+async fn backup_and_write_keymap_default(
+  path: &Path,
+  default: KeymapConfig,
+) -> Result<KeymapConfig> {
+  backup_config_file(path).await?;
+  write_keymap_default(path, default).await
+}
+
+async fn write_default_config<T>(path: &Path, mut default: T) -> Result<T>
+where
+  T: Serialize + NormalizeConfigDefaults,
+{
+  default.normalize_defaults();
+  let body = default.to_config_toml()?;
+  fs::write(path, body)
+    .await
+    .with_context(|| format!("failed to write {}", path.display()))?;
+  Ok(default)
+}
+
+async fn backup_and_write_default_config<T>(path: &Path, default: T) -> Result<T>
+where
+  T: Serialize + NormalizeConfigDefaults,
+{
+  backup_config_file(path).await?;
+  write_default_config(path, default).await
+}
+
+async fn backup_config_file(path: &Path) -> Result<PathBuf> {
+  let backup_path = next_backup_path(path);
+  fs::rename(path, &backup_path).await.with_context(|| {
+    format!(
+      "failed to back up incompatible config {} to {}",
+      path.display(),
+      backup_path.display()
+    )
+  })?;
+  Ok(backup_path)
+}
+
+fn next_backup_path(path: &Path) -> PathBuf {
+  let file_name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .unwrap_or("config.toml");
+  let stamp = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_secs();
+  for index in 0..1000 {
+    let suffix = if index == 0 {
+      format!(".bak.{stamp}")
+    } else {
+      format!(".bak.{stamp}.{index}")
+    };
+    let candidate = path.with_file_name(format!("{file_name}{suffix}"));
+    if !candidate.exists() {
+      return candidate;
+    }
+  }
+  path.with_file_name(format!("{file_name}.bak.{stamp}.overflow"))
 }
 
 async fn write_back_if_toml_changed(path: &Path, original: &str, normalized: &str) -> Result<()> {
@@ -1370,4 +1646,34 @@ fn color_cube_component(value: u8) -> u8 {
 
 fn rgb_luminance(r: u8, g: u8, b: u8) -> f32 {
   (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn app_config_toml_writes_parseable_commented_defaults() {
+    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
+    toml::from_str::<AppConfig>(&body).expect("commented default config should parse");
+    assert!(body.contains("# gallery-tui main configuration."));
+    assert!(body.contains("# Layout preset selected on startup."));
+  }
+
+  #[test]
+  fn app_config_toml_deduplicates_preset_field_comments() {
+    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
+    assert_eq!(
+      body
+        .matches("# Layout algorithm used by this preset")
+        .count(),
+      1
+    );
+    assert_eq!(
+      body
+        .matches("# Default card width used by this preset.")
+        .count(),
+      1
+    );
+  }
 }

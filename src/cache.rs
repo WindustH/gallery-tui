@@ -1,10 +1,13 @@
 use std::{
+  io::ErrorKind,
   path::{Path, PathBuf},
   time::SystemTime,
 };
 
 use anyhow::{Context, Result};
 use tokio::fs;
+
+use crate::fs_atomic;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheCleanupReport {
@@ -62,6 +65,9 @@ pub async fn enforce_render_cache_limit(
         removed_files += 1;
         removed_bytes += entry.size_bytes;
       }
+      Err(error) if error.kind() == ErrorKind::NotFound => {
+        after_bytes = after_bytes.saturating_sub(entry.size_bytes);
+      }
       Err(error) => {
         tracing::warn!(
           cache = %entry.path.display(),
@@ -91,6 +97,9 @@ pub async fn clear_render_cache(cache_dir: &Path) -> Result<CacheCleanupReport> 
       Ok(()) => {
         let _ = fs::remove_file(render_cache_used_path(&entry.path)).await;
         removed_files += 1;
+        removed_bytes += entry.size_bytes;
+      }
+      Err(error) if error.kind() == ErrorKind::NotFound => {
         removed_bytes += entry.size_bytes;
       }
       Err(error) => {
@@ -150,8 +159,11 @@ async fn collect_render_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry
 }
 
 pub async fn touch_render_cache_entry(cache_path: &Path) {
+  if fs::metadata(cache_path).await.is_err() {
+    return;
+  }
   let path = render_cache_used_path(cache_path);
-  if let Err(error) = fs::write(&path, []).await {
+  if let Err(error) = fs_atomic::write(&path, []).await {
     tracing::warn!(
       cache = %cache_path.display(),
       used_marker = %path.display(),

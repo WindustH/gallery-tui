@@ -6,7 +6,7 @@ Rendered image output is cached under:
 
 Each run writes a detailed log to:
 
-- `~/.cache/gallery-tui/logs/<startup-time>.log`
+- `~/.cache/gallery-tui/logs/<startup-time>-<pid>-<nonce>.log`
 
 ## Cache Limit
 
@@ -26,6 +26,18 @@ limit.
 
 Cache hits update a small `.used` marker so LRU does not depend on filesystem
 access-time behavior.
+
+Multiple gallery-tui instances may share the same cache directory. Render cache
+files, LRU markers, and rewritten configuration files are committed via a
+temporary file followed by an atomic rename, so another instance will see either
+the old complete file or the new complete file. Concurrent cache cleanup treats
+files already removed by another instance as already cleaned.
+
+Temporary files that do not need to become a cache/config file, such as editor
+scratch files, are written under `/tmp/gallery-tui` by default. Set
+`GALLERY_TUI_TMPDIR` to override that directory. Temporary files used for atomic
+cache/config replacement stay next to the final file because cross-filesystem
+rename is not atomic.
 
 ## Compression
 

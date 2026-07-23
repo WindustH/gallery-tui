@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "gallery-tui"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -942,6 +942,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "windows-sys",
  "zstd",
 ]
 

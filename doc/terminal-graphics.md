@@ -18,6 +18,14 @@ Default render mode order:
 4. Chafa symbols
 5. ASCII symbols without color
 
+## Multiple Instances
+
+When kitty graphics are used, each gallery-tui process uses its own image-id
+namespace. Exiting or suspending one instance clears the images it knows about
+instead of issuing a terminal-wide delete-all command, which avoids interfering
+with other gallery-tui instances or other TUI programs running in the same
+terminal server.
+
 ## Zellij
 
 Zellij is handled conservatively. Rendering many protocol images under zellij

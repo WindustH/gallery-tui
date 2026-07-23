@@ -1,6 +1,7 @@
 use std::{
-  fs::File,
+  fs::{File, OpenOptions},
   path::{Path, PathBuf},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -12,9 +13,7 @@ pub fn init(cache_dir: &Path) -> Result<PathBuf> {
   std::fs::create_dir_all(&log_dir)
     .with_context(|| format!("failed to create {}", log_dir.display()))?;
   let started = Local::now().format("%Y%m%d-%H%M%S").to_string();
-  let log_path = log_dir.join(format!("{started}.log"));
-  let file =
-    File::create(&log_path).with_context(|| format!("failed to create {}", log_path.display()))?;
+  let (log_path, file) = create_log_file(&log_dir, &started)?;
 
   fmt()
     .with_writer(file)
@@ -25,4 +24,36 @@ pub fn init(cache_dir: &Path) -> Result<PathBuf> {
     .init();
 
   Ok(log_path)
+}
+
+fn create_log_file(log_dir: &Path, started: &str) -> Result<(PathBuf, File)> {
+  let nonce = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_nanos();
+  for index in 0..1000 {
+    let suffix = if index == 0 {
+      format!("{}-{nonce}", std::process::id())
+    } else {
+      format!("{}-{nonce}-{index}", std::process::id())
+    };
+    let path = log_dir.join(format!("{started}-{suffix}.log"));
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+      Ok(file) => return Ok((path, file)),
+      Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+      Err(error) => {
+        return Err(error).with_context(|| format!("failed to create {}", path.display()));
+      }
+    }
+  }
+  let path = log_dir.join(format!(
+    "{started}-{}-{nonce}-overflow.log",
+    std::process::id()
+  ));
+  let file = OpenOptions::new()
+    .write(true)
+    .create_new(true)
+    .open(&path)
+    .with_context(|| format!("failed to create {}", path.display()))?;
+  Ok((path, file))
 }

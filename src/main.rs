@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod config;
 mod event;
+mod fs_atomic;
 mod layout;
 mod logging;
 mod metadata;
@@ -12,6 +13,7 @@ mod terminal;
 mod ui;
 
 use std::{
+  env,
   io::{self, Write},
   path::{Path, PathBuf},
   sync::{
@@ -35,7 +37,7 @@ use crate::{
   render::RenderStore,
   terminal::Tui,
 };
-use img_tui::{NativeImageConfig, RenderMode, capability, native_image};
+use img_tui::{NativeImageConfig, RenderMode, capability};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -71,7 +73,13 @@ async fn main() -> Result<()> {
 
   let settings = config::load_or_create().await?;
   let log_path = logging::init(&settings.cache_dir)?;
-  tracing::info!(cache_dir = %settings.cache_dir.display(), log_path = %log_path.display(), "gallery-tui starting");
+  let temp_dir = gallery_temp_dir();
+  tracing::info!(
+    cache_dir = %settings.cache_dir.display(),
+    temp_dir = %temp_dir.display(),
+    log_path = %log_path.display(),
+    "gallery-tui starting"
+  );
   match cache::enforce_render_cache_limit(
     &settings.cache_dir,
     settings.config.render.disk_cache_max_bytes,
@@ -135,16 +143,6 @@ async fn main() -> Result<()> {
     passthrough: terminal_capability.passthrough().map(str::to_string),
     kitty_unicode_placeholders: terminal_capability.kitty_unicode_placeholders(),
   };
-  let protocol_reset = render_modes
-    .contains(&RenderMode::Kitty)
-    .then(|| {
-      native_image::erase_sequence(
-        RenderMode::Kitty,
-        native_config.passthrough.as_deref(),
-        None,
-      )
-    })
-    .flatten();
   let mut renderer = RenderStore::new(
     app.settings.cache_dir.clone(),
     effective_render,
@@ -152,7 +150,7 @@ async fn main() -> Result<()> {
     render_modes,
   );
 
-  let mut tui = Tui::new(protocol_reset)?;
+  let mut tui = Tui::new()?;
   loop {
     tui.draw(|frame| ui::draw(frame, &mut app, &mut renderer, &tx))?;
     if app.should_quit() {
@@ -162,7 +160,7 @@ async fn main() -> Result<()> {
       input_enabled.store(false, Ordering::SeqCst);
       input_generation.fetch_add(1, Ordering::SeqCst);
       tui.suspend()?;
-      let result = edit_text_in_editor(request.initial_text(), &app.settings.cache_dir);
+      let result = edit_text_in_editor(request.initial_text(), &temp_dir);
       let resume_result = tui.resume();
       if resume_result.is_ok() {
         discard_pending_terminal_events();
@@ -206,6 +204,24 @@ async fn main() -> Result<()> {
   }
 
   Ok(())
+}
+
+fn gallery_temp_dir() -> PathBuf {
+  env::var_os("GALLERY_TUI_TMPDIR")
+    .filter(|value| !value.is_empty())
+    .map(PathBuf::from)
+    .unwrap_or_else(default_gallery_temp_dir)
+}
+
+fn default_gallery_temp_dir() -> PathBuf {
+  #[cfg(unix)]
+  {
+    PathBuf::from("/tmp/gallery-tui")
+  }
+  #[cfg(not(unix))]
+  {
+    env::temp_dir().join("gallery-tui")
+  }
 }
 
 fn handle_async_event(

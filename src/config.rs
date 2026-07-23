@@ -1,10 +1,13 @@
 use std::{
   collections::{BTreeMap, BTreeSet},
-  env,
   fmt::Write as FmtWrite,
+  io::ErrorKind,
   path::{Path, PathBuf},
   time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::env;
 
 use anyhow::{Context, Result};
 use framework_tui::{KeyBindingConfig, KeyBindings};
@@ -13,7 +16,10 @@ use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::model::{SortDirection, SortField, SortSpec};
+use crate::{
+  fs_atomic,
+  model::{SortDirection, SortField, SortSpec},
+};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -1087,14 +1093,14 @@ fn unix_platform_dir(
 
 pub async fn write_app_config(path: &Path, config: &AppConfig) -> Result<()> {
   let body = app_config_toml(config)?;
-  fs::write(path, body)
+  fs_atomic::write(path, body)
     .await
     .with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn write_app_config_sync(path: &Path, config: &AppConfig) -> Result<()> {
   let body = app_config_toml(config)?;
-  std::fs::write(path, body).with_context(|| format!("failed to write {}", path.display()))
+  fs_atomic::write_sync(path, body).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn app_config_toml(config: &AppConfig) -> Result<String> {
@@ -1283,9 +1289,13 @@ async fn read_or_write_keymap_default(path: &Path, default: KeymapConfig) -> Res
   if !path.exists() {
     return write_keymap_default(path, default).await;
   }
-  let body = fs::read_to_string(path)
-    .await
-    .with_context(|| format!("failed to read {}", path.display()))?;
+  let body = match fs::read_to_string(path).await {
+    Ok(body) => body,
+    Err(error) if error.kind() == ErrorKind::NotFound => {
+      return write_keymap_default(path, default).await;
+    }
+    Err(error) => return Err(error).with_context(|| format!("failed to read {}", path.display())),
+  };
   let mut parsed: KeymapConfig = match toml::from_str(&body) {
     Ok(parsed) => parsed,
     Err(_) => return backup_and_write_keymap_default(path, default).await,
@@ -1304,9 +1314,13 @@ where
   if !path.exists() {
     return write_default_config(path, default).await;
   }
-  let body = fs::read_to_string(path)
-    .await
-    .with_context(|| format!("failed to read {}", path.display()))?;
+  let body = match fs::read_to_string(path).await {
+    Ok(body) => body,
+    Err(error) if error.kind() == ErrorKind::NotFound => {
+      return write_default_config(path, default).await;
+    }
+    Err(error) => return Err(error).with_context(|| format!("failed to read {}", path.display())),
+  };
   let mut parsed: T = match toml::from_str(&body) {
     Ok(parsed) => parsed,
     Err(_) => return backup_and_write_default_config(path, default).await,
@@ -1359,7 +1373,7 @@ impl NormalizeConfigDefaults for ThemeConfig {
 }
 
 async fn write_keymap_default(path: &Path, default: KeymapConfig) -> Result<KeymapConfig> {
-  fs::write(path, format_keymap_toml(&default))
+  fs_atomic::write(path, format_keymap_toml(&default))
     .await
     .with_context(|| format!("failed to write {}", path.display()))?;
   Ok(default)
@@ -1379,7 +1393,7 @@ where
 {
   default.normalize_defaults();
   let body = default.to_config_toml()?;
-  fs::write(path, body)
+  fs_atomic::write(path, body)
     .await
     .with_context(|| format!("failed to write {}", path.display()))?;
   Ok(default)
@@ -1395,13 +1409,19 @@ where
 
 async fn backup_config_file(path: &Path) -> Result<PathBuf> {
   let backup_path = next_backup_path(path);
-  fs::rename(path, &backup_path).await.with_context(|| {
-    format!(
-      "failed to back up incompatible config {} to {}",
-      path.display(),
-      backup_path.display()
-    )
-  })?;
+  match fs::rename(path, &backup_path).await {
+    Ok(()) => {}
+    Err(error) if error.kind() == ErrorKind::NotFound => {}
+    Err(error) => {
+      return Err(error).with_context(|| {
+        format!(
+          "failed to back up incompatible config {} to {}",
+          path.display(),
+          backup_path.display()
+        )
+      });
+    }
+  }
   Ok(backup_path)
 }
 
@@ -1413,12 +1433,12 @@ fn next_backup_path(path: &Path) -> PathBuf {
   let stamp = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_secs();
+    .as_nanos();
   for index in 0..1000 {
     let suffix = if index == 0 {
-      format!(".bak.{stamp}")
+      format!(".bak.{}.{stamp}", std::process::id())
     } else {
-      format!(".bak.{stamp}.{index}")
+      format!(".bak.{}.{stamp}.{index}", std::process::id())
     };
     let candidate = path.with_file_name(format!("{file_name}{suffix}"));
     if !candidate.exists() {
@@ -1430,7 +1450,7 @@ fn next_backup_path(path: &Path) -> PathBuf {
 
 async fn write_back_if_toml_changed(path: &Path, original: &str, normalized: &str) -> Result<()> {
   if toml_semantic_value(original) != toml_semantic_value(normalized) {
-    fs::write(path, normalized)
+    fs_atomic::write(path, normalized)
       .await
       .with_context(|| format!("failed to update {}", path.display()))?;
   }

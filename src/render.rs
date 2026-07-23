@@ -4,6 +4,7 @@ use std::{
   path::{Path, PathBuf},
   process::Command,
   sync::{Arc, Mutex},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use ansi_to_tui::IntoText;
@@ -18,6 +19,7 @@ use crate::{
   cache,
   config::RenderConfig,
   event::{AsyncEvent, RenderOutcome, RenderedImage},
+  fs_atomic,
   model::ImageItem,
 };
 use img_tui::{
@@ -34,6 +36,7 @@ pub struct RenderStore {
   compressed_memory: CompressedMemoryCache,
   failures: HashMap<String, String>,
   in_flight: HashSet<String>,
+  session_nonce: u32,
   semaphore: Arc<Semaphore>,
   preload_semaphore: Arc<Semaphore>,
 }
@@ -145,6 +148,7 @@ impl RenderStore {
     let max_preloads = max_concurrent.saturating_sub(1);
     let raw_memory_cache_max_bytes = config.raw_memory_cache_max_bytes;
     let compressed_memory_cache_max_bytes = config.compressed_memory_cache_max_bytes;
+    let session_nonce = render_session_nonce();
     Self {
       cache_dir,
       config,
@@ -156,6 +160,7 @@ impl RenderStore {
       ))),
       failures: HashMap::new(),
       in_flight: HashSet::new(),
+      session_nonce,
       semaphore: Arc::new(Semaphore::new(max_concurrent)),
       preload_semaphore: Arc::new(Semaphore::new(max_preloads)),
     }
@@ -207,6 +212,7 @@ impl RenderStore {
     let native_config = self.native_config.clone();
     let modes = self.modes.clone();
     let compressed_memory = self.compressed_memory.clone();
+    let session_nonce = self.session_nonce;
     let tx = tx.clone();
     let semaphore = self.semaphore.clone();
 
@@ -220,6 +226,7 @@ impl RenderStore {
         native_config,
         modes,
         compressed_memory,
+        session_nonce,
         semaphore,
         permits,
       )
@@ -299,6 +306,10 @@ impl RenderStore {
       hasher.update(mode.label().as_bytes());
       hasher.update([0]);
     }
+    if self.modes.contains(&RenderMode::Kitty) {
+      hasher.update(self.session_nonce.to_le_bytes());
+      hasher.update([0]);
+    }
     hex::encode(hasher.finalize())
   }
 }
@@ -313,6 +324,7 @@ async fn render_with_fallbacks(
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
   compressed_memory: CompressedMemoryCache,
+  session_nonce: u32,
   semaphore: Arc<Semaphore>,
   permits: Option<RenderPermits>,
 ) -> Result<RenderedImage, String> {
@@ -329,8 +341,15 @@ async fn render_with_fallbacks(
   let mut errors = Vec::new();
   let mut prepared_native = None;
   for mode in modes {
-    let compressed_cache_key =
-      render_cache_key(&image_path, width, height, &config, &native_config, mode);
+    let compressed_cache_key = render_cache_key(
+      &image_path,
+      width,
+      height,
+      &config,
+      &native_config,
+      mode,
+      session_nonce,
+    );
     let cache_path = cache_dir.join(format!("{compressed_cache_key}.ansi"));
     let rendered = if mode.is_protocol() {
       render_or_read_cache(
@@ -343,6 +362,7 @@ async fn render_with_fallbacks(
         native_config.clone(),
         mode,
         compressed_memory.clone(),
+        session_nonce,
         Some(&mut prepared_native),
       )
       .await
@@ -357,6 +377,7 @@ async fn render_with_fallbacks(
         native_config.clone(),
         mode,
         compressed_memory.clone(),
+        session_nonce,
         None,
       )
       .await
@@ -386,9 +407,10 @@ async fn render_or_read_cache(
   native_config: NativeImageConfig,
   mode: RenderMode,
   compressed_memory: CompressedMemoryCache,
+  session_nonce: u32,
   prepared_native: Option<&mut Option<Result<native_image::PreparedNativeImage, String>>>,
 ) -> Result<RenderedImage, String> {
-  let image_id = kitty_image_id(&image_path, width, height, mode);
+  let image_id = kitty_image_id(&image_path, width, height, mode, session_nonce);
   let placement_id = kitty_placement_id(mode, image_id);
 
   if let Some(bytes) = compressed_cache_get(&compressed_memory, &compressed_cache_key) {
@@ -463,7 +485,7 @@ async fn render_or_read_cache(
                 compressed_cache_key.clone(),
                 cached.clone(),
               );
-              if let Err(error) = fs::write(&cache_path, cached).await {
+              if let Err(error) = fs_atomic::write(&cache_path, cached).await {
                 warn!(
                   cache = %cache_path.display(),
                   %error,
@@ -587,7 +609,7 @@ async fn render_or_read_cache(
     Ok(cached) => {
       compressed_cache_insert(&compressed_memory, compressed_cache_key, cached.clone());
       if can_write_disk_cache {
-        match fs::write(&cache_path, cached).await {
+        match fs_atomic::write(&cache_path, cached).await {
           Ok(()) => cache::touch_render_cache_entry(&cache_path).await,
           Err(error) => {
             warn!(
@@ -840,6 +862,7 @@ fn render_cache_key(
   config: &RenderConfig,
   native_config: &NativeImageConfig,
   mode: RenderMode,
+  session_nonce: u32,
 ) -> String {
   let mut hasher = Sha256::new();
   hasher.update(path.to_string_lossy().as_bytes());
@@ -854,6 +877,10 @@ fn render_cache_key(
   hasher.update(width.to_le_bytes());
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());
+  if mode == RenderMode::Kitty {
+    hasher.update([0]);
+    hasher.update(session_nonce.to_le_bytes());
+  }
   hash_render_config(&mut hasher, config);
   hash_native_config(&mut hasher, native_config);
   for arg in &config.chafa_args {
@@ -1136,11 +1163,30 @@ fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
   hasher.update([0]);
 }
 
-fn kitty_image_id(path: &Path, width: u16, height: u16, mode: RenderMode) -> Option<u32> {
+fn render_session_nonce() -> u32 {
+  let mut hasher = Sha256::new();
+  hasher.update(std::process::id().to_le_bytes());
+  let now = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_nanos();
+  hasher.update(now.to_le_bytes());
+  let digest = hasher.finalize();
+  (u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x00ff_ffff).max(1)
+}
+
+fn kitty_image_id(
+  path: &Path,
+  width: u16,
+  height: u16,
+  mode: RenderMode,
+  session_nonce: u32,
+) -> Option<u32> {
   if mode != RenderMode::Kitty {
     return None;
   }
   let mut hasher = Sha256::new();
+  hasher.update(session_nonce.to_le_bytes());
   hasher.update(path.to_string_lossy().as_bytes());
   hasher.update(width.to_le_bytes());
   hasher.update(height.to_le_bytes());

@@ -102,6 +102,7 @@ pub fn draw(
   output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_browser(
   frame: &mut Frame,
   app: &mut App,
@@ -265,6 +266,7 @@ fn state_colors(theme: &ThemeConfig, foreground: &str, background: &str) -> (Col
   )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_detail(
   frame: &mut Frame,
   app: &mut App,

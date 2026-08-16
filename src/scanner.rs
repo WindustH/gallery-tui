@@ -80,6 +80,9 @@ fn image_item_from_path(path: PathBuf, extension: String) -> Option<ImageItem> {
 }
 
 fn oriented_image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+  if crate::svg::is_svg(path) {
+    return crate::svg::svg_dimensions(path).ok();
+  }
   let reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
   let mut decoder = reader.into_decoder().ok()?;
   let dimensions = decoder.dimensions();

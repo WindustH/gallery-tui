@@ -9,6 +9,7 @@ mod metadata;
 mod model;
 mod render;
 mod scanner;
+mod svg;
 mod terminal;
 mod ui;
 

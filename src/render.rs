@@ -338,6 +338,19 @@ async fn render_with_fallbacks(
       _preload: None,
     },
   };
+  // SVGs cannot be decoded by the `image` crate or Chafa: rasterize to a
+  // cached PNG (oversampled 2x for crisp downscaling) and render that.
+  let image_path = if crate::svg::is_svg(&image_path) {
+    let (cell_width, cell_height) = native_config.cell_pixels.unwrap_or((8, 16));
+    let oversample = 2;
+    let target = (
+      u32::from(width.max(1)) * u32::from(cell_width.max(1)) * oversample,
+      u32::from(height.max(1)) * u32::from(cell_height.max(1)) * oversample,
+    );
+    crate::svg::ensure_rasterized(&image_path, target, &cache_dir).await?
+  } else {
+    image_path
+  };
   let mut errors = Vec::new();
   let mut prepared_native = None;
   for mode in modes {
@@ -907,6 +920,7 @@ struct DecodedCacheFile {
   should_rewrite: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn encode_cache_file(
   payload: &RenderedBytes,
   width: u16,

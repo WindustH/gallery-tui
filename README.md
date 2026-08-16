@@ -13,6 +13,7 @@ https://github.com/user-attachments/assets/f69182bb-49cd-429c-825d-6cae8e5c43c1
 - Which-key style hints.
 - Rename, select, batch path export, refresh, cache clearing, and flexible sort commands.
 - Terminal graphics support with Kitty, Sixel, iTerm2, Chafa symbols, and ASCII fallback.
+- SVG support: vector files are rasterized on demand (with resvg) and cached, then rendered like any other image.
 - On-demand async rendering with zstd-compressed LRU render cache.
 
 ## Usage

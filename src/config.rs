@@ -48,7 +48,7 @@ impl Default for AppConfig {
       initial_sort: "name_asc".to_string(),
       supported_extensions: [
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "avif", "qoi", "ico", "pnm",
-        "tga",
+        "tga", "svg",
       ]
       .into_iter()
       .map(str::to_string)
@@ -1133,18 +1133,16 @@ fn add_app_config_comments(
     if let Some(header) = toml_table_header(trimmed) {
       table = header.to_string();
       let comment_key = comment_table_key(&table);
-      if seen_comments.insert(comment_key.clone()) {
-        if let Some(comment) = comment_for(&comment_key) {
+      if seen_comments.insert(comment_key.clone())
+        && let Some(comment) = comment_for(&comment_key) {
           push_toml_comment(&mut out, comment);
         }
-      }
     } else if let Some(key) = toml_field_key(trimmed) {
       let comment_key = comment_field_key(&table, key);
-      if seen_comments.insert(comment_key.clone()) {
-        if let Some(comment) = comment_for(&comment_key) {
+      if seen_comments.insert(comment_key.clone())
+        && let Some(comment) = comment_for(&comment_key) {
           push_toml_comment(&mut out, comment);
         }
-      }
     }
     out.push_str(line);
     out.push('\n');

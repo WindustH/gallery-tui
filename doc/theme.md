@@ -39,9 +39,9 @@ to black-on-green.
 - `error`
 
 By default the hovered card is highlighted with a cyan background and
-the terminal's default foreground (`hover_background = "cyan"`,
-`hover_foreground = "reset"`); set `hover_foreground` to a color or
-`"auto"` to override it.
+black foreground (`hover_background = "cyan"`, `hover_foreground =
+"black"`); set `hover_foreground` to `"auto"` to pick the contrasting
+color automatically.
 
 ## Which-Key
 

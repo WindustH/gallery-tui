@@ -988,7 +988,7 @@ fn default_selected_foreground() -> String {
 }
 
 fn default_hover_foreground() -> String {
-  "reset".to_string()
+  "black".to_string()
 }
 
 fn default_hover_background() -> String {
@@ -996,7 +996,7 @@ fn default_hover_background() -> String {
 }
 
 fn default_hover_selected_foreground() -> String {
-  "reset".to_string()
+  "black".to_string()
 }
 
 fn default_hover_selected_background() -> String {

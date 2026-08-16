@@ -988,19 +988,19 @@ fn default_selected_foreground() -> String {
 }
 
 fn default_hover_foreground() -> String {
-  "black".to_string()
+  "light_cyan".to_string()
 }
 
 fn default_hover_background() -> String {
-  "cyan".to_string()
+  "reset".to_string()
 }
 
 fn default_hover_selected_foreground() -> String {
-  "black".to_string()
+  "light_green".to_string()
 }
 
 fn default_hover_selected_background() -> String {
-  "green".to_string()
+  "reset".to_string()
 }
 
 pub async fn load_or_create() -> Result<Settings> {

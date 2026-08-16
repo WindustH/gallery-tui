@@ -38,6 +38,11 @@ to black-on-green.
 - `hover_selected_background`
 - `error`
 
+By default the hovered card keeps the terminal background
+(`hover_background = "reset"`) and is marked with a distinct foreground
+color (`light_cyan`, `light_green` when also selected); set an explicit
+background to get a highlight block instead.
+
 ## Which-Key
 
 Which-key hints are drawn above the status line. They use separate theme fields:

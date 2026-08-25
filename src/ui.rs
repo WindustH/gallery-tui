@@ -49,7 +49,6 @@ pub fn draw(
   let main = chunks[0];
   let footer = chunks[1];
   let completion_area = completion_overlay_area(app, area, footer);
-  let occlusion_areas = completion_area.iter().copied().collect::<Vec<_>>();
 
   match app.view {
     ViewMode::Browser => draw_browser(
@@ -61,7 +60,7 @@ pub fn draw(
       &mut protocol_overlays,
       &mut preserve_overlays,
       &mut preserve_areas,
-      &occlusion_areas,
+      &[],
     ),
     ViewMode::Detail => draw_detail(
       frame,
@@ -72,25 +71,27 @@ pub fn draw(
       &mut protocol_overlays,
       &mut preserve_overlays,
       &mut preserve_areas,
-      &occlusion_areas,
+      &[],
     ),
   }
   draw_footer(frame, app, footer, &mut cursor_position);
+  // Modal rects replace kitty U=1 placeholder cells. Uncovered cells keep
+  // displaying the image, and the regular text diff restores placeholders
+  // when a modal closes.
+  let mut occluders = Vec::new();
   if let Some(completion_area) = completion_area {
     draw_command_completion(frame, app, completion_area);
-    protocol_overlays.retain(|overlay| !rect_intersects(overlay.area, completion_area));
-    preserve_areas.retain(|area| !rect_intersects(*area, completion_area));
-    if preserve_areas.is_empty() {
-      preserve_overlays = false;
-    }
+    occluders.push(completion_area);
   }
-  draw_confirm(frame, app, area);
-  draw_key_help(frame, app, area);
+  if let Some(confirm_area) = draw_confirm(frame, app, area) {
+    occluders.push(confirm_area);
+  }
+  if let Some(help_area) = draw_key_help(frame, app, area) {
+    occluders.push(help_area);
+  }
   if app.confirm.is_some() || app.key_help {
-    protocol_overlays.clear();
+    // Modals own the interaction: hide the cursor while they are open.
     cursor_position = None;
-    preserve_overlays = false;
-    preserve_areas.clear();
   }
   let mut output = FrameOutput::new(protocol_overlays, cursor_position);
   output.preserve_overlays = preserve_overlays;
@@ -99,6 +100,7 @@ pub fn draw(
   } else {
     Vec::new()
   };
+  output.occluders = occluders;
   output
 }
 
@@ -681,11 +683,4 @@ fn card_inner_area(area: Rect, layout: &EffectiveLayoutConfig) -> Rect {
     area
   };
   safe_inner(area, layout.padding, layout.padding)
-}
-
-fn rect_intersects(left: Rect, right: Rect) -> bool {
-  left.x < right.x.saturating_add(right.width)
-    && right.x < left.x.saturating_add(left.width)
-    && left.y < right.y.saturating_add(right.height)
-    && right.y < left.y.saturating_add(left.height)
 }

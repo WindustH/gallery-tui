@@ -424,7 +424,11 @@ async fn render_or_read_cache(
   prepared_native: Option<&mut Option<Result<native_image::PreparedNativeImage, String>>>,
 ) -> Result<RenderedImage, String> {
   let image_id = kitty_image_id(&image_path, width, height, mode, session_nonce);
-  let placement_id = kitty_placement_id(mode, image_id);
+  let placement_id = if native_config.kitty_unicode_placeholders {
+    None
+  } else {
+    kitty_placement_id(mode, image_id)
+  };
 
   if let Some(bytes) = compressed_cache_get(&compressed_memory, &compressed_cache_key) {
     match decode_cache_file(
@@ -654,7 +658,20 @@ async fn render_prepared_protocol(
   width: u16,
   height: u16,
 ) -> Result<RenderedBytes, String> {
-  if mode == RenderMode::Kitty
+  if mode == RenderMode::Kitty && native_config.kitty_unicode_placeholders {
+    let image_id = image_id.unwrap_or(1);
+    let upload = native_image::render_prepared_kitty_upload(prepared, native_config, image_id)
+      .await
+      .map_err(|err| err.to_string())?;
+    let virtual_placement =
+      native_image::render_kitty_virtual_placement(native_config, image_id, width, height);
+    let mut data = upload.data;
+    data.extend_from_slice(&virtual_placement);
+    Ok(RenderedBytes {
+      data,
+      refresh: Some(virtual_placement),
+    })
+  } else if mode == RenderMode::Kitty
     && let Some(placement_id) = placement_id
   {
     let viewport = native_image::NativeImageViewport {
@@ -1206,8 +1223,7 @@ fn kitty_image_id(
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());
   let digest = hasher.finalize();
-  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x00ff_ffff;
-  Some(image_id.max(1))
+  Some(native_image::kitty_image_id(&digest))
 }
 
 fn kitty_placement_id(mode: RenderMode, image_id: Option<u32>) -> Option<u32> {

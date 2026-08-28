@@ -4,7 +4,8 @@
 
 If raw image protocol bytes appear as terminal text, use a safer render mode:
 
-- under zellij, keep `render.zellij_sixel = "off"`
+- under Zellij 0.45+, KGP is auto-detected; keep
+  `render.zellij_sixel = "off"` unless Sixel is also wanted
 - use Chafa symbols or ASCII fallback
 
 ## Images Do Not Fill Preview Space

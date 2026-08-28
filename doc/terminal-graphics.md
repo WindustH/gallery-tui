@@ -28,14 +28,24 @@ terminal server.
 
 ## Zellij
 
-Zellij is handled conservatively. Rendering many protocol images under zellij
-can be unstable depending on the outer terminal.
+[Zellij 0.45 and newer](https://zellij.dev/documentation/compatibility.html)
+implement the Kitty graphics protocol. `img-tui` sends the standard KGP query
+to Zellij and prefers Kitty when both Zellij and its attached host terminal
+confirm support. It does not infer support from outer-terminal environment
+variables, so disabling `support_kitty_graphics_protocol` in Zellij or using an
+unsupported host still falls back safely.
 
-`render.zellij_sixel` controls behavior:
+Zellij does not currently implement Kitty Unicode placeholders. gallery-tui
+therefore uses regular Kitty placements under Zellij instead of the `U=1`
+placeholder path.
+
+`render.zellij_sixel` controls only the secondary Sixel path:
 
 - `off`: never use sixel under zellij
 - `auto`: enable sixel only when active probing reports sixel support
 - `on`: force the Yazi-style sixel path
 
-The default is `off`, so zellij uses Chafa symbols/ASCII unless configured
-otherwise.
+The default is `off`. This does not disable Kitty graphics: the effective order
+under a capable Zellij is Kitty, Chafa symbols, then ASCII. Older Zellij
+versions and sessions without KGP support retain the previous fallback
+behavior.

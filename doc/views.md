@@ -1,65 +1,46 @@
-# Browser And Detail Views
+# Browser and Detail Views
 
-## Browser View
+## Browser
 
-The browser view is a scrollable canvas of image cards. Cards are laid out in
-folder order after applying the current sort.
+The browser shows the folder's images as cards on a scrolling canvas, in the
+current sort order. The focused card uses the hover colors and selected cards
+use the selection colors (see [Theme](theme.md)). The status line at the bottom
+shows the view, the focused position, the number of selected images, the sort,
+and the last message.
 
-The focused card is highlighted. Selected cards use a separate selected style.
+Three layouts are built in:
 
-Supported layout strategies:
+- `grid`: a fixed number of columns and rows sized to fill the window. The
+  default startup layout is `grid 4 2`.
+- `list`: one column with a fixed number of items per screen, the preview on
+  the left and the filename on the right.
+- `masonry`: columns of fixed-width cards whose heights follow each image's
+  aspect ratio.
 
-- grid
-- list
-- masonry
+Switch with [`:layout`](commands.md#layout-name-args) or define your own presets
+in [`config.toml`](configuration.md#presets).
 
-Default preset behavior:
+A card shows the image and, unless `card_style = "image_only"` or
+`show_filename = false`, the filename on the top, bottom, left, or right.
+Top and bottom labels use `label_lines` rows when it is set, and a share of the
+card set by `image_ratio` otherwise; the built-in grid and masonry presets
+reserve one line. `padding` keeps the content away from the card edge, which
+also leaves a visible frame of the focus and selection colors around
+borderless cards.
 
-- `grid`: fixed columns and visible rows. The startup default is
-  `:layout grid 4 2`
-- `list`: one column with a configured number of visible items, for example
-  `:layout list 12`; the default preset uses left-aligned previews, a smaller
-  image ratio, no vertical gap, and no card borders
-- `masonry`: dense columns using image aspect ratios, for example
-  `:layout masonry 4 30`
+## Detail
 
-Cards can display:
+Detail view shows the focused image on two pages:
 
-- image only
-- image plus filename
+- The image page scales the image to fill the available space.
+- The metadata page shows a smaller preview next to the file name, path,
+  format, size, dimensions, modified and created times, and the image's EXIF
+  tags.
 
-Filename position can be:
+`j` and `k` switch images and keep the current page; `h` and `l` switch pages.
+The image page hides the status line unless a prompt or key hint is showing.
 
-- top
-- bottom
-- left
-- right
-
-For top and bottom filename placement, layouts can use `label_lines` to reserve
-a fixed number of filename rows. The default grid and masonry presets reserve
-one row.
-
-Cards use `padding` to keep content away from the card edge. In bordered cards,
-padding is applied inside the border; in borderless cards, it leaves room for
-focused and selected background colors to remain visible.
-
-## Detail View
-
-Detail view keeps focus on the current image and has two pages:
-
-- image page
-- metadata page
-
-The image page shows a large preview scaled and centered to use the available
-space.
-
-The metadata page shows a preview plus filesystem metadata and available EXIF
-tags.
-
-In detail view, `e` opens the filename and editable metadata in `$EDITOR`.
-After the editor exits, gallery-tui shows a confirmation dialog before applying
-changed fields. Filename changes rename the image in the same directory; tag
-changes use `exiftool`.
-
-Vertical navigation switches images while preserving the current detail page.
-Horizontal navigation switches detail pages.
+Press `e` to edit the filename and metadata tags in `$EDITOR`. After the editor
+closes, gallery-tui lists the changes and asks for confirmation before
+renaming the file or writing tags. See
+[Metadata and Sorting](metadata-and-sorting.md#editing).

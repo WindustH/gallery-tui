@@ -7,8 +7,8 @@ use crate::event::AsyncEvent;
 use framework_tui::{PromptInputResult, handle_prompt_key, handle_prompt_paste};
 
 use super::{
-  App, COMMAND_NAMES, CommandCompletion, EditorRequest, Prompt, PromptBuffer, current_word_start,
-  filter_completion_candidates,
+  App, COMMAND_NAMES, CommandCompletion, EditorRequest, NO_ARG_COMMANDS, Prompt, PromptBuffer,
+  current_word_start, filter_completion_candidates,
 };
 
 impl App {
@@ -103,7 +103,7 @@ impl App {
       .set_completion_preserving_selection(completion);
   }
 
-  fn command_completion_for(&self, input: &str, cursor: usize) -> Option<CommandCompletion> {
+  fn command_completion_for(&mut self, input: &str, cursor: usize) -> Option<CommandCompletion> {
     let cursor = cursor.min(input.len());
     let before_cursor = input.get(..cursor)?;
     let normalized = before_cursor.trim_start_matches(':');
@@ -117,12 +117,15 @@ impl App {
     };
 
     if tokens.is_empty() || (tokens.len() == 1 && !ends_with_space) {
+      // A fully typed command without arguments is complete: no trailing
+      // space, so Enter runs it instead of only inserting the space.
+      let complete = NO_ARG_COMMANDS.contains(&prefix.trim_start_matches(':'));
       return Some(CommandCompletion::new(
         word_start,
         cursor,
         prefix,
         filter_completion_candidates(COMMAND_NAMES.iter().copied(), prefix),
-        true,
+        !complete,
         0,
       ));
     }
@@ -134,12 +137,14 @@ impl App {
         }
         let replace_start = if ends_with_space { cursor } else { word_start };
         let prefix = if ends_with_space { "" } else { prefix };
+        // Layout arguments are optional, so a fully typed name can run as is.
+        let presets = &self.settings.config.layout.presets;
         Some(CommandCompletion::new(
           replace_start,
           cursor,
           prefix,
-          filter_completion_candidates(self.settings.config.layout.presets.keys(), prefix),
-          true,
+          filter_completion_candidates(presets.keys(), prefix),
+          !presets.contains_key(prefix),
           0,
         ))
       }
@@ -179,23 +184,78 @@ impl App {
     }
   }
 
-  fn sort_field_completions(&self, prefix: &str) -> Vec<String> {
-    let mut fields = BTreeSet::from([
-      "name".to_string(),
-      "modified".to_string(),
-      "created".to_string(),
-      "size".to_string(),
-      "format".to_string(),
-      "dimensions".to_string(),
-      "metadata".to_string(),
-      "path".to_string(),
-    ]);
-    for item in &self.images {
-      for entry in &item.metadata {
-        fields.insert(entry.name.clone());
+  fn sort_field_completions(&mut self, prefix: &str) -> Vec<String> {
+    let images = &self.images;
+    let fields = self.metadata_fields.get_or_insert_with(|| {
+      let mut fields = BTreeSet::from([
+        "name".to_string(),
+        "modified".to_string(),
+        "created".to_string(),
+        "size".to_string(),
+        "format".to_string(),
+        "dimensions".to_string(),
+        "metadata".to_string(),
+        "path".to_string(),
+      ]);
+      for entry in images.iter().flat_map(|item| &item.metadata) {
+        if !fields.contains(&entry.name) {
+          fields.insert(entry.name.clone());
+        }
         fields.insert(format!("{}.{}", entry.group, entry.name));
       }
-    }
+      fields.into_iter().collect()
+    });
     filter_completion_candidates(fields.iter(), prefix)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::path::PathBuf;
+
+  use super::*;
+  use crate::config::{AppConfig, KeymapConfig, Settings, ThemeConfig};
+
+  fn app() -> App {
+    let settings = Settings {
+      config: AppConfig::default(),
+      keymap: KeymapConfig::default(),
+      theme: ThemeConfig::default(),
+      config_path: PathBuf::new(),
+      cache_dir: PathBuf::new(),
+    };
+    App::new(PathBuf::from("/"), settings, Vec::new())
+  }
+
+  /// The prompt input after Enter applies the completion, or `None` when
+  /// Enter submits the command as typed.
+  fn after_enter(app: &mut App, input: &str) -> Option<String> {
+    let completion = app.command_completion_for(input, input.len())?;
+    let mut buffer = PromptBuffer::new(input);
+    completion.apply_to(&mut buffer).then_some(buffer.input)
+  }
+
+  #[test]
+  fn enter_runs_fully_typed_commands_that_need_no_arguments() {
+    let mut app = app();
+    assert_eq!(after_enter(&mut app, "refresh"), None);
+    assert_eq!(after_enter(&mut app, "clear-cache"), None);
+    assert_eq!(after_enter(&mut app, "layout-use list"), None);
+    assert_eq!(after_enter(&mut app, "sort name asc"), None);
+  }
+
+  #[test]
+  fn enter_completes_partial_words() {
+    let mut app = app();
+    assert_eq!(after_enter(&mut app, "ref").as_deref(), Some("refresh "));
+    assert_eq!(after_enter(&mut app, "layout").as_deref(), Some("layout "));
+    assert_eq!(
+      after_enter(&mut app, "layout mas").as_deref(),
+      Some("layout masonry ")
+    );
+    assert_eq!(
+      after_enter(&mut app, "sort na").as_deref(),
+      Some("sort name ")
+    );
   }
 }

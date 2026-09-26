@@ -1,48 +1,47 @@
 # Rendering
 
-Images are rendered on demand. A small configurable preload window around the
-focused image keeps navigation responsive without rendering the whole folder.
+## Render Modes
 
-Rendering is limited by:
+Each image is drawn with the first render mode that works, in this order:
 
-- `render.max_concurrent`
+1. Kitty graphics protocol
+2. Sixel
+3. iTerm2 inline images
+4. Chafa symbols: colored Unicode block characters
+5. ASCII: uncolored Chafa text
 
-Focused images and detail previews share the same global render limit as
-preloads, but preloads reserve at most `render.max_concurrent - 1` slots. This
-keeps at least one slot available for the currently visible image while
-background work is active.
+Graphics protocols are used only when the terminal supports them (see
+[Terminal Graphics](terminal-graphics.md)); the order can be overridden with
+`GALLERY_TUI_RENDER_MODES`. With `render.auto_detect = false`, only the two
+Chafa modes are used.
 
-Chafa fallback is controlled by:
+For the graphics protocols, gallery-tui decodes the image itself, applies EXIF
+rotation and embedded ICC color profiles, and scales it to the preview size,
+enlarging small images to fill the space. The Chafa modes run the external
+`chafa` program with `render.chafa_args` (see
+[Configuration](configuration.md#render)).
 
-- `render.chafa_bin`
-- `render.chafa_args`
-- `render.chafa_threads`
+## When Images Render
 
-Native image protocols resize images to the target preview bounds, including
-upscaling low-resolution images so they use the available preview space.
-Native resize uses a SIMD-accelerated path for common 8-bit pixel formats and
-falls back to the image crate for higher bit-depth formats. When multiple
-native protocol backends are tried for the same image and size, the decoded and
-resized intermediate image is shared across those attempts.
+Images render on demand: the cards on screen first, then a window around the
+focused image (`render.preload_behind` before and `render.preload_ahead` after
+it; in detail view at most one before and two after).
 
-Sixel output reuses contiguous RGB/alpha buffers and parallelizes alpha index
-preparation plus scanline run encoding.
+At most `render.max_concurrent` images render at once. Preloading starts only
+when a slot is free and leaves one slot for the images on screen. When you
+scroll past images faster than they render, queued renders for images that are
+no longer on screen are dropped.
 
-Chafa fallback uses `--scale=max` unless overridden in `render.chafa_args`.
+Finished renders are cached in memory and on disk, so revisiting an image does
+not render it again. See [Cache and Logs](cache-and-logs.md).
 
-## Render Backends
+## Formats
 
-Native protocol backends:
+| Format | How it is drawn |
+| --- | --- |
+| JPEG, PNG, GIF, WebP, BMP, TIFF, QOI, ICO, PNM, TGA | Decoded by gallery-tui for graphics protocols, or by Chafa |
+| SVG | Rasterized to PNG with resvg at the preview size, cached, then drawn like a PNG |
+| AVIF | Chafa modes only, if your Chafa build reads AVIF |
 
-- Kitty
-- Sixel
-- iTerm2
-
-Text fallback backends:
-
-- Chafa symbols
-- ASCII symbols without color
-
-Protocol bytes are written directly to the terminal after each Ratatui frame.
-They are not inserted into Ratatui cells, which would expose raw escape
-sequences as text.
+Animated GIF and WebP files show their first frame. Which extensions are
+scanned at all is set by `supported_extensions` in `config.toml`.

@@ -100,7 +100,7 @@ impl App {
     }
     let direction = args[args.len() - 1];
     let field = args[..args.len() - 1].join(" ");
-    let Some(sort_spec) = config::sort_for_command(&field, direction) else {
+    let Some(sort_spec) = SortSpec::from_command(&field, direction) else {
       self.set_message("usage: :sort <field> <asc|desc>");
       return;
     };
@@ -148,20 +148,13 @@ impl App {
     let path = self.settings.config_path.clone();
     let config = self.settings.config.clone();
     let tx = tx.clone();
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-      handle.spawn(async move {
-        let result = config::write_app_config(&path, &config)
-          .await
-          .map(|()| success_message)
-          .map_err(|err| err.to_string());
-        let _ = tx.send(AsyncEvent::ConfigSave(ConfigSaveOutcome { result }));
-      });
-    } else {
-      let result = config::write_app_config_sync(&path, &config)
+    tokio::spawn(async move {
+      let result = config::write_app_config(&path, &config)
+        .await
         .map(|()| success_message)
         .map_err(|err| err.to_string());
       let _ = tx.send(AsyncEvent::ConfigSave(ConfigSaveOutcome { result }));
-    }
+    });
   }
 
   fn request_clear_cache(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {

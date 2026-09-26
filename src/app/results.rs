@@ -1,11 +1,12 @@
+use std::{collections::HashSet, path::Path};
+
 use tracing::{error, info};
 
+use super::App;
 use crate::{
   event::{CacheClearOutcome, ConfigSaveOutcome, MetadataWriteOutcome, RenameOutcome, ScanOutcome},
-  model::sort_images,
+  model::{file_label, sort_images},
 };
-
-use super::{App, file_label};
 
 impl App {
   pub fn finish_scan(&mut self, outcome: ScanOutcome) {
@@ -14,11 +15,13 @@ impl App {
       Ok(mut images) => {
         sort_images(&mut images, &outcome.sort);
         self.images = images;
-        self.sort_spec = outcome.sort.clone();
+        self.metadata_fields = None;
+        self.sort_spec = outcome.sort;
         self.restore_focus(outcome.preserve_focus.as_deref());
+        let existing: HashSet<&Path> = self.images.iter().map(|item| item.path.as_path()).collect();
         self
           .selected
-          .retain(|path| self.images.iter().any(|item| item.path == *path));
+          .retain(|path| existing.contains(path.as_path()));
         self.set_message(format!("refreshed {} images", self.images.len()));
         info!(count = self.images.len(), "scan finished");
       }
@@ -32,16 +35,7 @@ impl App {
   pub fn finish_rename(&mut self, outcome: RenameOutcome) {
     match outcome.result {
       Ok(()) => {
-        for item in &mut self.images {
-          if item.path == outcome.from {
-            item.path = outcome.to.clone();
-            item.refresh_name();
-            break;
-          }
-        }
-        if self.selected.remove(&outcome.from) {
-          self.selected.insert(outcome.to.clone());
-        }
+        self.apply_rename(&outcome.from, &outcome.to);
         self.set_message(format!("renamed to {}", file_label(&outcome.to)));
         info!(from = %outcome.from.display(), to = %outcome.to.display(), "rename finished");
       }
@@ -49,6 +43,16 @@ impl App {
         error!(from = %outcome.from.display(), to = %outcome.to.display(), error, "rename failed");
         self.set_message(format!("rename failed: {error}"));
       }
+    }
+  }
+
+  /// Update the image list and selection after `from` was renamed to `to`.
+  fn apply_rename(&mut self, from: &Path, to: &Path) {
+    if let Some(item) = self.images.iter_mut().find(|item| item.path == from) {
+      item.set_path(to.to_path_buf());
+    }
+    if self.selected.remove(from) {
+      self.selected.insert(to.to_path_buf());
     }
   }
 
@@ -89,16 +93,7 @@ impl App {
 
   pub fn finish_metadata_write(&mut self, outcome: MetadataWriteOutcome) {
     if outcome.rename_applied {
-      for item in &mut self.images {
-        if item.path == outcome.from {
-          item.path = outcome.to.clone();
-          item.refresh_name();
-          break;
-        }
-      }
-      if self.selected.remove(&outcome.from) {
-        self.selected.insert(outcome.to.clone());
-      }
+      self.apply_rename(&outcome.from, &outcome.to);
     }
 
     let current_path = if outcome.rename_applied {
@@ -115,6 +110,7 @@ impl App {
         {
           item.metadata = metadata;
         }
+        self.metadata_fields = None;
         if outcome.edit.file_name.is_some() && outcome.edit.tags.is_empty() {
           self.set_message(format!("renamed to {}", file_label(&outcome.to)));
         } else {

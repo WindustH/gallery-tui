@@ -120,19 +120,31 @@ pub async fn clear_render_cache(cache_dir: &Path) -> Result<CacheCleanupReport> 
   })
 }
 
+/// Render cache files: `<key>.ansi` renders in `cache_dir` and rasterized
+/// SVGs in `cache_dir/svg`.
 async fn collect_render_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
   let mut entries = Vec::new();
-  let mut dir = fs::read_dir(cache_dir)
+  collect_cache_files(cache_dir, "ansi", &mut entries)
     .await
-    .with_context(|| format!("failed to read cache directory {}", cache_dir.display()))?;
+    .with_context(|| format!("failed to scan cache directory {}", cache_dir.display()))?;
+  let svg_dir = svg_cache_dir(cache_dir);
+  match collect_cache_files(&svg_dir, "png", &mut entries).await {
+    Ok(()) => {}
+    Err(error) if error.kind() == ErrorKind::NotFound => {}
+    Err(error) => tracing::warn!(dir = %svg_dir.display(), %error, "failed to scan SVG cache"),
+  }
+  Ok(entries)
+}
 
-  while let Some(entry) = dir
-    .next_entry()
-    .await
-    .with_context(|| format!("failed to scan cache directory {}", cache_dir.display()))?
-  {
+async fn collect_cache_files(
+  dir: &Path,
+  extension: &str,
+  entries: &mut Vec<CacheEntry>,
+) -> std::io::Result<()> {
+  let mut dir = fs::read_dir(dir).await?;
+  while let Some(entry) = dir.next_entry().await? {
     let path = entry.path();
-    if path.extension().and_then(|value| value.to_str()) != Some("ansi") {
+    if path.extension().and_then(|value| value.to_str()) != Some(extension) {
       continue;
     }
 
@@ -154,8 +166,12 @@ async fn collect_render_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry
       last_used,
     });
   }
+  Ok(())
+}
 
-  Ok(entries)
+/// Directory holding PNG rasterizations of SVG files.
+pub fn svg_cache_dir(cache_dir: &Path) -> PathBuf {
+  cache_dir.join("svg")
 }
 
 pub async fn touch_render_cache_entry(cache_path: &Path) {
@@ -173,10 +189,11 @@ pub async fn touch_render_cache_entry(cache_path: &Path) {
   }
 }
 
+/// LRU marker next to a cache file: `<file name>.used`.
 fn render_cache_used_path(cache_path: &Path) -> PathBuf {
-  let mut path = cache_path.to_path_buf();
-  path.set_extension("ansi.used");
-  path
+  let mut name = cache_path.file_name().unwrap_or_default().to_os_string();
+  name.push(".used");
+  cache_path.with_file_name(name)
 }
 
 async fn render_cache_last_used(cache_path: &Path, metadata: &std::fs::Metadata) -> SystemTime {
@@ -189,4 +206,44 @@ async fn render_cache_last_used(cache_path: &Path, metadata: &std::fs::Metadata)
     .accessed()
     .or_else(|_| metadata.modified())
     .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+#[cfg(test)]
+mod tests {
+  use std::fs;
+
+  use super::*;
+
+  #[tokio::test]
+  async fn clear_removes_renders_svg_rasters_and_markers_only() {
+    let dir = std::env::temp_dir().join(format!(
+      "gallery-tui-cache-{}-{}",
+      std::process::id(),
+      SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+    ));
+    let svg = svg_cache_dir(&dir);
+    fs::create_dir_all(&svg).unwrap();
+    fs::write(dir.join("a.ansi"), b"12345").unwrap();
+    fs::write(dir.join("a.ansi.used"), b"").unwrap();
+    fs::write(svg.join("b.png"), b"123").unwrap();
+    fs::write(svg.join("b.png.used"), b"").unwrap();
+    fs::write(dir.join("notes.txt"), b"keep").unwrap();
+
+    let report = clear_render_cache(&dir).await.unwrap();
+    let mut left: Vec<_> = walkdir::WalkDir::new(&dir)
+      .into_iter()
+      .filter_map(Result::ok)
+      .filter(|entry| entry.file_type().is_file())
+      .map(|entry| entry.file_name().to_string_lossy().into_owned())
+      .collect();
+    left.sort();
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(report.removed_files, 2);
+    assert_eq!(report.removed_bytes, 8);
+    assert_eq!(left, ["notes.txt"]);
+  }
 }

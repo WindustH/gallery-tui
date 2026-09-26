@@ -1,3 +1,4 @@
+use img_tui::ProtocolOverlay;
 use ratatui::{
   Frame,
   buffer::CellDiffOption,
@@ -9,13 +10,14 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::{
-  app::App,
   config::EffectiveLayoutConfig,
-  event::{AsyncEvent, RenderedImage},
+  event::AsyncEvent,
   model::ImageItem,
-  render::RenderStore,
+  render::{RenderState, RenderStore, RenderedImage},
 };
-use img_tui::ProtocolOverlay;
+
+/// Cell size assumed when the terminal does not report one.
+const DEFAULT_CELL_PIXELS: (u16, u16) = (8, 16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImageAlignment {
@@ -30,98 +32,101 @@ pub(super) fn image_alignment_for_layout(layout: &EffectiveLayoutConfig) -> Imag
   }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn draw_rendered_image(
-  frame: &mut Frame,
-  app: &App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  item: &ImageItem,
-  index: usize,
-  total: usize,
-  area: Rect,
-  scroll: u16,
-  alignment: ImageAlignment,
-  protocol_overlays: &mut Vec<ProtocolOverlay>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  occlusion_areas: &[Rect],
-) {
-  if area.width == 0 || area.height == 0 {
-    return;
-  }
+/// Image rendering state for one frame: the render store plus the protocol
+/// overlays collected while drawing.
+pub(super) struct FrameImages<'a> {
+  renderer: &'a mut RenderStore,
+  tx: &'a mpsc::UnboundedSender<AsyncEvent>,
+  cell_pixels: Option<(u16, u16)>,
+  pub(super) overlays: Vec<ProtocolOverlay>,
+  /// Keep previous protocol images visible where new ones are still pending.
+  pub(super) preserve_overlays: bool,
+  pub(super) preserve_areas: Vec<Rect>,
+}
 
-  let image_area = fit_image_rect(area, item, app, alignment);
-  if image_area.width == 0 || image_area.height == 0 {
-    return;
-  }
-
-  renderer.request(item, image_area.width, image_area.height, tx);
-  if rect_intersects_any(image_area, occlusion_areas) {
-    return;
-  }
-  if let Some(rendered) = renderer.get(item, image_area.width, image_area.height) {
-    match rendered {
-      RenderedImage::Symbols { mode, text } => {
-        let _mode_label = mode.label();
-        frame.render_widget(Paragraph::new(text).scroll((scroll, 0)), image_area);
-      }
-      RenderedImage::Protocol {
-        mode,
-        data,
-        refresh,
-        placement,
-        fingerprint,
-        erase,
-      } => {
-        let _mode_label = mode.label();
-        reserve_protocol_area(frame, image_area);
-        protocol_overlays.push(ProtocolOverlay {
-          area: image_area,
-          mode,
-          data,
-          refresh,
-          placement,
-          fingerprint,
-          erase,
-        });
-      }
+impl<'a> FrameImages<'a> {
+  pub(super) fn new(
+    renderer: &'a mut RenderStore,
+    tx: &'a mpsc::UnboundedSender<AsyncEvent>,
+    cell_pixels: Option<(u16, u16)>,
+  ) -> Self {
+    renderer.begin_frame();
+    Self {
+      renderer,
+      tx,
+      cell_pixels,
+      overlays: Vec::new(),
+      preserve_overlays: false,
+      preserve_areas: Vec::new(),
     }
-  } else if let Some(error) = renderer.failure(item, image_area.width, image_area.height) {
-    frame.render_widget(
-      Paragraph::new(format!("render failed\n{error}")).wrap(Wrap { trim: true }),
-      image_area,
-    );
-  } else {
-    if renderer.draws_with_protocol() {
-      *preserve_overlays = true;
-      preserve_areas.push(image_area);
+  }
+
+  /// Draw `item` fitted inside `area`, requesting a render when needed.
+  /// `position` is the item's (index, total) shown while it renders.
+  pub(super) fn draw(
+    &mut self,
+    frame: &mut Frame,
+    item: &ImageItem,
+    area: Rect,
+    alignment: ImageAlignment,
+    position: (usize, usize),
+  ) {
+    if area.width == 0 || area.height == 0 {
       return;
     }
-    frame.render_widget(
-      Paragraph::new(rendering_text(item, index, total))
-        .alignment(Alignment::Center)
-        .style(Style::default().add_modifier(Modifier::DIM)),
-      image_area,
-    );
+    let image_area = fit_image_rect(area, item, self.cell_pixels, alignment);
+    if image_area.width == 0 || image_area.height == 0 {
+      return;
+    }
+
+    let draws_with_protocol = self.renderer.draws_with_protocol();
+    match self
+      .renderer
+      .request(item, image_area.width, image_area.height, self.tx)
+    {
+      RenderState::Ready(RenderedImage::Symbols { paragraph, .. }) => {
+        frame.render_widget(&**paragraph, image_area);
+      }
+      RenderState::Ready(RenderedImage::Protocol(image)) => {
+        reserve_protocol_area(frame, image_area);
+        self.overlays.push(image.overlay(image_area));
+      }
+      RenderState::Failed(error) => {
+        frame.render_widget(
+          Paragraph::new(format!("render failed\n{error}")).wrap(Wrap { trim: true }),
+          image_area,
+        );
+      }
+      RenderState::Pending if draws_with_protocol => {
+        self.preserve_overlays = true;
+        self.preserve_areas.push(image_area);
+      }
+      RenderState::Pending => {
+        frame.render_widget(
+          Paragraph::new(rendering_text(item, position))
+            .alignment(Alignment::Center)
+            .style(Style::default().add_modifier(Modifier::DIM)),
+          image_area,
+        );
+      }
+    }
+  }
+
+  /// Start a background render of `item` as it would be drawn in `area`.
+  pub(super) fn preload(&mut self, item: &ImageItem, area: Rect, alignment: ImageAlignment) {
+    let fitted = fit_image_rect(area, item, self.cell_pixels, alignment);
+    self
+      .renderer
+      .preload(item, fitted.width, fitted.height, self.tx);
   }
 }
 
-fn rect_intersects_any(area: Rect, others: &[Rect]) -> bool {
-  others.iter().any(|other| rect_intersects(area, *other))
-}
-
-fn rect_intersects(left: Rect, right: Rect) -> bool {
-  left.x < right.x.saturating_add(right.width)
-    && right.x < left.x.saturating_add(left.width)
-    && left.y < right.y.saturating_add(right.height)
-    && right.y < left.y.saturating_add(left.height)
-}
-
+/// The largest rect inside `area` with the image's aspect ratio, measured in
+/// terminal cells of `cell_pixels` size.
 pub(super) fn fit_image_rect(
   area: Rect,
   item: &ImageItem,
-  app: &App,
+  cell_pixels: Option<(u16, u16)>,
   alignment: ImageAlignment,
 ) -> Rect {
   let Some((image_width, image_height)) = item.dimensions else {
@@ -131,17 +136,19 @@ pub(super) fn fit_image_rect(
     return area;
   }
 
-  let (cell_width, cell_height) = app.terminal_cell_pixels.unwrap_or((8, 16));
-  let max_pixel_width = f64::from(area.width) * f64::from(cell_width.max(1));
-  let max_pixel_height = f64::from(area.height) * f64::from(cell_height.max(1));
+  let (cell_width, cell_height) = cell_pixels.unwrap_or(DEFAULT_CELL_PIXELS);
+  let cell_width = f64::from(cell_width.max(1));
+  let cell_height = f64::from(cell_height.max(1));
+  let max_pixel_width = f64::from(area.width) * cell_width;
+  let max_pixel_height = f64::from(area.height) * cell_height;
   let scale = (max_pixel_width / f64::from(image_width))
     .min(max_pixel_height / f64::from(image_height))
     .max(0.0);
 
-  let fitted_width = ((f64::from(image_width) * scale) / f64::from(cell_width.max(1)))
+  let fitted_width = ((f64::from(image_width) * scale) / cell_width)
     .round()
     .clamp(1.0, f64::from(area.width)) as u16;
-  let fitted_height = ((f64::from(image_height) * scale) / f64::from(cell_height.max(1)))
+  let fitted_height = ((f64::from(image_height) * scale) / cell_height)
     .round()
     .clamp(1.0, f64::from(area.height)) as u16;
 
@@ -156,7 +163,7 @@ pub(super) fn fit_image_rect(
   }
 }
 
-fn rendering_text(item: &ImageItem, index: usize, total: usize) -> Text<'static> {
+fn rendering_text(item: &ImageItem, (index, total): (usize, usize)) -> Text<'static> {
   Text::from(vec![
     Line::from("rendering..."),
     Line::from(item.file_name.clone()),
@@ -164,6 +171,8 @@ fn rendering_text(item: &ImageItem, index: usize, total: usize) -> Text<'static>
   ])
 }
 
+/// Leave cells under a protocol image out of the text diff so ratatui does
+/// not paint over the image.
 fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
   let buf = frame.buffer_mut();
   for y in area.y..area.y.saturating_add(area.height) {

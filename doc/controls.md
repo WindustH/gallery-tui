@@ -1,58 +1,74 @@
 # Controls
 
-Key bindings are context aware. Browser-only commands do not fire in detail
-view, and detail-only commands do not fire in browser view.
+These are the default bindings. Every key can be changed in
+[`keymap.toml`](keymap.md). Keys only act in the view they belong to: browser
+keys do nothing in detail view and the other way round.
 
 ## Browser
 
-- `q`: quit the program
-- `enter`: open focused image detail
-- `h/j/k/l`: move focus
-- arrow keys: move focus
-- left mouse click: focus the clicked card
-- mouse wheel: move focus between images
-- `pgup`, `pgdn`: page-style focus navigation
-- `home`, `end`: first/last image
-- `space`: toggle selection and move focus to the next image
-- `esc`: clear selected images
-- `r`: rename focused image; the cursor starts before the extension dot
-- `c p`: output selected paths, or focused path if nothing is selected
-- `s n`, `s N`: sort by name ascending/descending
-- `s m`, `s M`: sort by modified time ascending/descending
-- `s z`, `s S`: sort by size ascending/descending
-- `:`: open command prompt
+| Key | Action |
+| --- | --- |
+| `h` `j` `k` `l`, arrow keys | Move focus |
+| `pgup`, `pgdn` | Move focus by one screen of cards |
+| `home` or `g g` | First image |
+| `end` or `G` | Last image |
+| `enter` | Open the focused image in detail view |
+| `space` | Toggle selection and move focus to the next image |
+| `esc` | Clear the selection |
+| `c p` | Quit and print the selected paths (or the focused path) to stdout |
+| `s n`, `s N` | Sort by name, ascending or descending |
+| `s m`, `s M` | Sort by modified time, ascending or descending |
+| `s z`, `s S` | Sort by size, ascending or descending |
+| `r` | Rename the focused image |
+| `:` | Open the [command prompt](commands.md) |
+| `f1` | Show the key bindings |
+| `q`, `ctrl-c` | Quit |
 
-## Command Prompt
+Mouse: the wheel moves focus one row up or down, and a left click focuses the
+clicked card.
 
-- `tab`, `shift-tab`: browse completion candidates
-- `enter`: insert the selected completion or run the command
-- `up`, `down`: browse command history for the current session
-- `left`, `right`, `home`, `end`: move the cursor
-- `ctrl-a`, `ctrl-e`: move to start/end
-- `ctrl-u`, `ctrl-k`: delete before/after cursor
-- `ctrl-g`: edit the input in `$EDITOR`
-- `esc`: close the prompt
+After pressing the first key of a sequence such as `s` or `g`, a which-key
+hint above the status line lists the keys that can follow.
 
 ## Detail
 
-- `q`: return to browser
-- `h` or left arrow: show image page
-- `l` or right arrow: show metadata page
-- `j/k` or down/up arrows: next/previous image
-- mouse wheel: next/previous image
-- `e`: edit filename and visible metadata in `$EDITOR`; after saving, confirm before writing changes
-- `r`: rename current image; the cursor starts before the extension dot
-- `:`: open command prompt
+| Key | Action |
+| --- | --- |
+| `j`, `down` | Next image |
+| `k`, `up` | Previous image |
+| `g g`, `G` | First image, last image |
+| `h`, `left` | Show the image page |
+| `l`, `right` | Show the metadata page |
+| `e` | Edit the filename and metadata in `$EDITOR` |
+| `r` | Rename the current image |
+| `:` | Open the command prompt |
+| `f1` | Show the key bindings |
+| `q` | Back to the browser (quits when started on a single image without `--browser`) |
 
-## Confirm Dialog
+Mouse: the wheel switches to the next or previous image.
 
-- `y`: apply the pending change
-- `enter`, `n`, `esc`: cancel
+## Prompt
 
-## Which-Key
+The same keys edit the rename prompt and the `:` command prompt.
 
-When a key sequence prefix is active, gallery-tui shows a which-key style hint
-area above the status line. The status line remains fixed at the bottom of the
-footer.
+| Key | Action |
+| --- | --- |
+| `enter` | Accept the selected completion, or run the command |
+| `esc` | Close the prompt |
+| `tab`, `shift-tab` | Next or previous completion (command prompt) |
+| `up`, `down` | Previous or next command from this session's history (command prompt) |
+| `left`, `right` | Move the cursor |
+| `home` or `ctrl-a`, `end` or `ctrl-e` | Move to the start or end |
+| `backspace`, `delete` | Delete before or under the cursor |
+| `ctrl-u`, `ctrl-k` | Delete everything before or after the cursor |
+| `ctrl-g` | Edit the input in `$EDITOR` |
+| `f1` | Show the prompt key bindings |
 
-Which-key layout and colors are configured in `theme.toml`.
+When renaming, the prompt starts with the current filename and the cursor just
+before the extension.
+
+## Dialogs
+
+- Confirmation dialog: `y` applies the change; `n`, `enter`, `esc`, or `q`
+  cancels.
+- Key binding list (`f1`): `f1`, `esc`, `q`, or `enter` closes it.

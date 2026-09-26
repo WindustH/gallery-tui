@@ -1,51 +1,67 @@
 # Terminal Graphics
 
-When `render.auto_detect` is enabled, gallery-tui probes terminal graphics
-support before entering the TUI.
+## Detection
 
-The probe checks:
+Before the interface starts, gallery-tui asks the terminal what it supports: the
+Kitty graphics protocol, its name and version, the size of a character cell in
+pixels, and Sixel support. It combines the answers with environment variables
+such as `TERM`, `TERM_PROGRAM`, and `KITTY_WINDOW_ID`, then uses the first
+available protocol of Kitty, Sixel, and iTerm2, falling back to Chafa text
+output (see [Rendering](rendering.md)).
 
-- Kitty graphics support
-- terminal version response
-- cell pixel size
-- DA1/sixel support
+The cell size also sets how images are fitted into cards, so images keep their
+aspect ratio even in text mode.
 
-Default render mode order:
+In kitty, Ghostty, and Rio, Kitty images are drawn with Unicode placeholders,
+which lets dialogs and completion lists cover part of an image cleanly.
 
-1. Kitty
-2. Sixel
-3. iTerm2
-4. Chafa symbols
-5. ASCII symbols without color
+## Choosing Render Modes
 
-## Multiple Instances
+Set `GALLERY_TUI_RENDER_MODES` to override the detected order with a list
+separated by commas, colons, or spaces:
 
-When kitty graphics are used, each gallery-tui process uses its own image-id
-namespace. Exiting or suspending one instance clears the images it knows about
-instead of issuing a terminal-wide delete-all command, which avoids interfering
-with other gallery-tui instances or other TUI programs running in the same
-terminal server.
+| Value | Mode |
+| --- | --- |
+| `kitty` or `kgp` | Kitty graphics protocol |
+| `sixel` | Sixel |
+| `iterm`, `iterm2`, or `iip` | iTerm2 inline images |
+| `symbols` | Chafa colored block symbols |
+| `ascii` | Chafa uncolored ASCII |
+| `off`, `none`, `text`, `chafa`, or `fallback` | `symbols` then `ascii` |
+| `auto` or empty | Use detection |
+
+```sh
+GALLERY_TUI_RENDER_MODES=symbols gallery-tui ~/Pictures
+GALLERY_TUI_RENDER_MODES=sixel,symbols gallery-tui ~/Pictures
+```
+
+Setting `render.auto_detect = false` in `config.toml` also limits gallery-tui to
+the two Chafa modes and keeps the Chafa colors from `render.chafa_args`.
+
+## tmux and GNU screen
+
+Inside tmux, gallery-tui runs `tmux set -p allow-passthrough on` for its pane,
+reads the outer terminal's `TERM` and `TERM_PROGRAM` from the tmux environment,
+and wraps graphics in tmux passthrough sequences. Inside GNU screen it uses
+screen's passthrough.
 
 ## Zellij
 
 [Zellij 0.45 and newer](https://zellij.dev/documentation/compatibility.html)
-implement the Kitty graphics protocol. `img-tui` sends the standard KGP query
-to Zellij and prefers Kitty when both Zellij and its attached host terminal
-confirm support. It does not infer support from outer-terminal environment
-variables, so disabling `support_kitty_graphics_protocol` in Zellij or using an
-unsupported host still falls back safely.
+implement the Kitty graphics protocol. gallery-tui sends the standard Kitty
+query and uses Kitty only when Zellij answers it, which requires both Zellij's
+`support_kitty_graphics_protocol` and a capable host terminal. Environment
+variables from the outer terminal are not trusted inside Zellij, so an
+unsupported setup falls back to Chafa safely. Zellij does not support Kitty
+Unicode placeholders, so regular Kitty placements are used there.
 
-Zellij does not currently implement Kitty Unicode placeholders. gallery-tui
-therefore uses regular Kitty placements under Zellij instead of the `U=1`
-placeholder path.
+`render.zellij_sixel` controls whether Sixel is tried after Kitty:
 
-`render.zellij_sixel` controls only the secondary Sixel path:
+- `off` (default): never use Sixel inside Zellij
+- `auto` or `on`: use Sixel when the terminal query reports Sixel support
 
-- `off`: never use sixel under zellij
-- `auto`: enable sixel only when active probing reports sixel support
-- `on`: force the Yazi-style sixel path
+## Several Instances
 
-The default is `off`. This does not disable Kitty graphics: the effective order
-under a capable Zellij is Kitty, Chafa symbols, then ASCII. Older Zellij
-versions and sessions without KGP support retain the previous fallback
-behavior.
+Each gallery-tui process uses its own Kitty image IDs. When one instance exits
+or opens an editor, it deletes only its own images, so other instances and
+other programs in the same terminal keep theirs.

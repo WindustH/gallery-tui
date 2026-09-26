@@ -1,69 +1,70 @@
 # Commands
 
-Commands are entered from the prompt opened by `:`.
+Press `:` to open the command prompt, type a command, and press `enter`.
 
-Prompt controls:
+While typing, a completion list offers command names, layout names, sort fields
+(including the metadata tags of the loaded images), and `asc`/`desc`. `tab` and
+`shift-tab` move through it, and `enter` inserts the selected candidate if that
+changes the input; otherwise `enter` runs the command. `up` and `down` recall
+commands from the current session.
 
-- `tab`: move to the next completion candidate
-- `shift-tab`: move to the previous completion candidate
-- `enter`: insert the selected completion candidate when a useful completion is
-  selected; otherwise run the command
-- `up`, `down`: browse command history for the current session
-
-The completion list covers command names, layout names, sort fields, visible
-metadata fields, and `asc`/`desc`.
+| Command | Effect |
+| --- | --- |
+| `:refresh` | Rescan the folder |
+| `:clear-cache` | Delete the render cache |
+| `:sort <field> <asc\|desc>` | Sort the images |
+| `:layout <name> [args...]` | Switch layout and save it as the startup layout |
+| `:layout-use <name> [args...]` | Switch layout for this session only |
+| `:help` | Show the key bindings |
 
 ## `:refresh`
 
-Rescan the folder and reapply the current sort.
-
-If the focused file still exists, focus is restored to it. Selected paths that
-no longer exist are removed from selection. Files that disappear or become
-inaccessible during scan are skipped and logged instead of failing the whole
-scan.
+Rescans the folder and applies the current sort. Focus stays on the same file
+if it still exists, files that disappeared are dropped from the selection, and
+images that failed to render are tried again. Files that cannot be read during
+the scan are skipped and logged.
 
 ## `:clear-cache`
 
-Delete rendered image cache files and their `.used` LRU markers.
-
-This does not delete logs or unrelated files under `~/.cache/gallery-tui/`.
+Deletes the cached renders and SVG rasterizations, together with their `.used`
+markers, and empties the in-memory caches. Images on screen render again, and
+earlier render failures are retried. Logs and other files in the cache
+directory are kept. See [Cache and Logs](cache-and-logs.md).
 
 ## `:sort <field> <asc|desc>`
 
-Sort by a built-in field or any visible metadata tag.
-
-Examples:
+Sorts by a built-in field or by any metadata tag. The direction can also be
+written `ascending` or `descending`.
 
 ```text
 :sort name asc
 :sort created desc
-:sort Exif.ExposureTime desc
-:sort ISO asc
+:sort dimensions desc
+:sort DateTimeOriginal desc
+:sort primary.ExposureTime asc
 ```
 
-Built-in fields:
+Built-in fields and their aliases:
 
-- `name`, `filename`, `file`
-- `path`
-- `modified`, `mtime`
-- `created`, `ctime`
-- `size`
-- `format`, `extension`, `ext`
-- `dimensions`, `resolution`
-- `metadata`, `exif` for metadata tag count
+| Field | Sorts by |
+| --- | --- |
+| `name`, `filename`, `file` | File name, ignoring ASCII case |
+| `path` | Full path, ignoring ASCII case |
+| `modified`, `mtime` | Modification time |
+| `created`, `ctime` | Creation time, where the file system records it |
+| `size` | File size |
+| `format`, `extension`, `ext` | Extension, then name |
+| `dimensions`, `dimension`, `resolution` | Pixel count, then width, then height |
+| `metadata`, `exif` | Number of EXIF tags |
 
-Unknown fields are treated as metadata keys. Metadata values are compared as
-numbers when a number or fraction can be parsed, then fall back to
-case-insensitive text comparison.
+Any other field names a metadata tag. See
+[Metadata and Sorting](metadata-and-sorting.md) for how tags are matched and
+compared.
 
 ## `:layout <name> [args...]`
 
-Switch to a layout preset. Positional arguments are mapped through the selected
-preset's `params` list in `config.toml`. This command writes the selected
-layout and arguments back to `config.toml`, so the layout is restored on the
-next startup.
-
-Examples:
+Switches to a layout preset and saves the choice, with its arguments, to
+`config.toml` so it is used at the next start.
 
 ```text
 :layout grid 3 3
@@ -73,18 +74,23 @@ Examples:
 :layout masonry 4 30
 ```
 
-Default presets:
+The default presets take these arguments:
 
-- `grid <columns> <rows>`: fixed grid that sizes cards to fill the browser area
-- `list <items>`: single-column list with the requested visible items per page
-- `masonry <columns> <card_width>`: dense masonry; use `0` columns for automatic
-  column calculation
+- `grid <columns> <rows>`: a fixed grid whose cards fill the screen. `3x3` is
+  shorthand for `3 3`.
+- `list <items>`: one column showing the given number of items per screen.
+- `masonry <columns> <card_width>`: columns of cards whose height follows each
+  image's aspect ratio. `0` columns fits as many columns of `card_width` cells
+  as the window allows.
 
-If fewer arguments are supplied, the preset defaults are used for the rest.
-Supplying more arguments than the preset declares is an error.
+Missing arguments keep the preset's values; extra arguments are an error.
+Presets and the arguments they accept are defined in
+[`config.toml`](configuration.md#layout).
 
 ## `:layout-use <name> [args...]`
 
-Temporarily switch to a layout preset without writing `config.toml`.
+Same as `:layout`, but the change lasts only until gallery-tui exits.
 
-The syntax and preset argument handling are the same as `:layout`.
+## `:help`
+
+Opens the key binding list for the current view, like `f1`.

@@ -161,4 +161,4 @@ automatically.
 | `GALLERY_TUI_RENDER_MODES` | Override the render mode order, for example `symbols` or `kitty,symbols` (see [Terminal Graphics](terminal-graphics.md#choosing-render-modes)) |
 | `GALLERY_TUI_TMPDIR` | Directory for temporary files such as editor drafts |
 | `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` | Base config and cache directories on Linux and macOS |
-| `EDITOR`, `VISUAL` | Editor for `ctrl-g` and metadata editing; `EDITOR` is tried first, then `VISUAL`, then `vi` |
+| `EDITOR`, `VISUAL` | Editor for `ctrl-g` and metadata editing; `EDITOR` is tried first, then `VISUAL`, then `vi` (`notepad` on Windows) |

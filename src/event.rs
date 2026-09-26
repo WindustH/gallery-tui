@@ -1,46 +1,29 @@
 use std::path::PathBuf;
 
 use crossterm::event::Event;
-use img_tui::{ProtocolPlacement, RenderMode};
-use ratatui::text::Text;
 
 use crate::{
   cache::CacheCleanupReport,
   metadata::MetadataEdit,
-  model::{ImageItem, SortSpec},
+  model::{ImageItem, ImageMetadataEntry, SortSpec},
+  render::RenderOutcome,
 };
 
 #[derive(Debug)]
 pub enum AsyncEvent {
-  Input { event: Event, generation: u64 },
+  Input {
+    event: Event,
+    generation: u64,
+  },
   Render(RenderOutcome),
   Scan(ScanOutcome),
   Rename(RenameOutcome),
   CacheClear(CacheClearOutcome),
   ConfigSave(ConfigSaveOutcome),
   MetadataWrite(MetadataWriteOutcome),
-}
-
-#[derive(Debug)]
-pub struct RenderOutcome {
-  pub cache_key: String,
-  pub result: Result<RenderedImage, String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum RenderedImage {
-  Symbols {
-    mode: RenderMode,
-    text: Text<'static>,
-  },
-  Protocol {
-    mode: RenderMode,
-    data: String,
-    refresh: Option<String>,
-    placement: Option<ProtocolPlacement>,
-    fingerprint: u64,
-    erase: Option<String>,
-  },
+  /// The process received a termination signal.
+  #[cfg(unix)]
+  Terminate,
 }
 
 #[derive(Debug)]
@@ -71,7 +54,7 @@ pub struct ConfigSaveOutcome {
 pub struct MetadataWriteOutcome {
   pub from: PathBuf,
   pub to: PathBuf,
-  pub result: Result<Vec<crate::model::ImageMetadataEntry>, String>,
+  pub result: Result<Vec<ImageMetadataEntry>, String>,
   pub edit: MetadataEdit,
   pub rename_applied: bool,
 }

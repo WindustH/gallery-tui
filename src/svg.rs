@@ -19,8 +19,8 @@ pub(crate) fn is_svg(path: &Path) -> bool {
 /// usvg always produces a concrete size (falling back to 100% of the
 /// viewBox), so this only fails when the file cannot be parsed.
 pub(crate) fn svg_dimensions(path: &Path) -> Result<(u32, u32)> {
-  let text = std::fs::read_to_string(path)
-    .with_context(|| format!("reading {}", path.display()))?;
+  let text =
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
   let tree = parse(&text)?;
   Ok(size_of(&tree))
 }
@@ -47,7 +47,8 @@ pub(crate) async fn ensure_rasterized(
   target: (u32, u32),
   cache_dir: &Path,
 ) -> Result<PathBuf, String> {
-  let modified = std::fs::metadata(svg)
+  let modified = tokio::fs::metadata(svg)
+    .await
     .and_then(|metadata| metadata.modified())
     .ok()
     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
@@ -60,11 +61,12 @@ pub(crate) async fn ensure_rasterized(
     target.0,
     target.1,
   );
-  let digest = sha256_hex(key_input.as_bytes());
-  let dir = cache_dir.join("svg");
+  let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(key_input.as_bytes()));
+  let dir = crate::cache::svg_cache_dir(cache_dir);
   let png_path = dir.join(format!("{}.png", &digest[..32]));
 
-  if png_path.exists() {
+  if tokio::fs::try_exists(&png_path).await.unwrap_or(false) {
+    crate::cache::touch_render_cache_entry(&png_path).await;
     return Ok(png_path);
   }
 
@@ -72,8 +74,8 @@ pub(crate) async fn ensure_rasterized(
   let png_target = png_path.clone();
   let (target_w, target_h) = target;
   let rendered = tokio::task::spawn_blocking(move || {
-    let text = std::fs::read_to_string(&svg)
-      .with_context(|| format!("reading {}", svg.display()))?;
+    let text =
+      std::fs::read_to_string(&svg).with_context(|| format!("reading {}", svg.display()))?;
     let tree = parse(&text)?;
     rasterize(&tree, target_w, target_h)
   })
@@ -81,10 +83,10 @@ pub(crate) async fn ensure_rasterized(
   .map_err(|error| format!("svg rasterization task failed: {error}"))?
   .map_err(|error| error.to_string())?;
 
-  std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
   crate::fs_atomic::write(&png_target, rendered)
     .await
     .map_err(|error| format!("writing {}: {error}", png_target.display()))?;
+  crate::cache::touch_render_cache_entry(&png_path).await;
   Ok(png_path)
 }
 
@@ -103,24 +105,16 @@ fn rasterize(tree: &usvg::Tree, target_w: u32, target_h: u32) -> Result<Vec<u8>>
     .min(8192);
 
   let scale = f64::from(width) / f64::from(size.width());
-  let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
-    .context("allocating SVG raster buffer")?;
+  let mut pixmap =
+    resvg::tiny_skia::Pixmap::new(width, height).context("allocating SVG raster buffer")?;
   resvg::render(
     tree,
     resvg::tiny_skia::Transform::from_scale(scale as f32, scale as f32),
     &mut pixmap.as_mut(),
   );
-  pixmap.encode_png().context("encoding rasterized SVG as PNG")
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-  use std::fmt::Write as _;
-  let digest = <sha2::Sha256 as sha2::Digest>::digest(data);
-  let mut out = String::with_capacity(digest.len() * 2);
-  for byte in digest {
-    let _ = write!(out, "{byte:02x}");
-  }
-  out
+  pixmap
+    .encode_png()
+    .context("encoding rasterized SVG as PNG")
 }
 
 #[cfg(test)]

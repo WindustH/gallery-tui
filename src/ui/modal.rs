@@ -8,7 +8,10 @@ use ratatui::{
   text::{Line, Span, Text},
 };
 
-use crate::app::{App, ConfirmDialog};
+use crate::{
+  app::{App, ConfirmDialog},
+  model::file_label,
+};
 
 pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
   let Some(confirm) = &app.confirm else {
@@ -29,11 +32,7 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) -> Option<R
             .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-          format!(
-            "{} change(s): {}",
-            edit.change_count(),
-            display_file_name(path)
-          ),
+          format!("{} change(s): {}", edit.change_count(), file_label(path)),
           style,
         )),
       ];
@@ -95,11 +94,4 @@ pub(super) fn draw_key_help(frame: &mut Frame, app: &App, area: Rect) -> Option<
     ..KeyHelpDialogStyle::default()
   };
   draw_key_help_dialog(frame, area, app.key_help_title(), &entries, &key_help_style)
-}
-
-fn display_file_name(path: &std::path::Path) -> String {
-  path
-    .file_name()
-    .map(|name| name.to_string_lossy().into_owned())
-    .unwrap_or_else(|| path.display().to_string())
 }

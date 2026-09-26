@@ -1,57 +1,50 @@
 # Theme
 
-Theme settings are stored in:
+Colors live in `theme.toml` in the [config directory](configuration.md).
 
-- `~/.config/gallery-tui/theme.toml`
+## Color Values
 
-Colors use terminal ANSI colors. `reset` is supported and is the default
-background.
-
-Supported color names include:
-
-- `reset`
+- `reset`: the terminal's default color
 - `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`
 - `gray`, `dark_gray`
-- `light_red`, `light_green`, `light_yellow`, `light_blue`, `light_magenta`, `light_cyan`
-- compact aliases such as `darkgray`, `lightcyan`
-- indexed colors such as `ansi:236`
-- RGB values such as `#ffaa00`
+- `light_red`, `light_green`, `light_yellow`, `light_blue`, `light_magenta`,
+  `light_cyan`
+- spellings without the underscore, such as `darkgray` or `lightcyan`, and
+  `grey` for `gray`
+- `ansi:<0-255>` for an indexed color, such as `ansi:236`
+- `#rrggbb` for an RGB color, such as `#ffaa00`
 
-## Main Colors
+Names are case-insensitive. An unrecognized value falls back to `reset`.
 
-Selected items default to terminal white background with automatic foreground
-contrast. Hovered items default to black-on-cyan; hovered selected items default
-to black-on-green.
+## Cards and Text
 
-- `foreground`
-- `background`
-- `muted`
-- `accent`
-- `border`
-- `focused_border`
-- `selected_border`
-- `selected_foreground`
-- `selected_background`
-- `hover_foreground`
-- `hover_background`
-- `hover_selected_foreground`
-- `hover_selected_background`
-- `error`
+| Field | Default | Used for |
+| --- | --- | --- |
+| `foreground` | `white` | Text and unfocused cards |
+| `background` | `reset` | Background and unfocused cards |
+| `muted` | `dark_gray` | Metadata labels, dialog hints, completion ghost text, the empty-folder message |
+| `accent` | `cyan` | Status line view name, prompt prefix, confirmation dialog title |
+| `border` | `dark_gray` | Borders on the metadata page |
+| `hover_foreground` | `black` | Focused card text |
+| `hover_background` | `cyan` | Focused card background |
+| `selected_foreground` | `auto` | Selected card text |
+| `selected_background` | `white` | Selected card background |
+| `hover_selected_foreground` | `black` | Text of a card that is focused and selected |
+| `hover_selected_background` | `cyan` | Background of a card that is focused and selected |
 
-By default the hovered card is highlighted with a cyan background and
-black foreground (`hover_background = "cyan"`, `hover_foreground =
-"black"`); set `hover_foreground` to `"auto"` to pick the contrasting
-color automatically.
+The three card foreground fields also accept `auto`, which picks black or white,
+whichever contrasts with the matching background.
 
-## Which-Key
+## Which-Key Hints
 
-Which-key hints are drawn above the status line. They use separate theme fields:
+| Field | Default | Used for |
+| --- | --- | --- |
+| `which_key_columns` | `3` | Maximum hint columns; fewer are used in narrow windows |
+| `which_key_foreground` | `white` | Hint and completion list text |
+| `which_key_key` | `light_cyan` | Keys in hints and in the `f1` list |
+| `which_key_description` | `light_magenta` | Descriptions in hints and in the `f1` list |
+| `which_key_separator` | `" -> "` | Text between a key and its description |
+| `which_key_separator_color` | `dark_gray` | Color of that separator |
 
-- `which_key_columns`
-- `which_key_background`
-- `which_key_foreground`
-- `which_key_key`
-- `which_key_rest`
-- `which_key_description`
-- `which_key_separator`
-- `which_key_separator_color`
+`focused_border`, `selected_border`, `error`, `which_key_background`, and
+`which_key_rest` are accepted for compatibility but currently have no effect.

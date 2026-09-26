@@ -1,78 +1,83 @@
 # Configuration
 
-Default configuration files are created on first run:
+gallery-tui reads three files from its config directory:
 
-- `~/.config/gallery-tui/config.toml`
-- `~/.config/gallery-tui/keymap.toml`
-- `~/.config/gallery-tui/theme.toml`
+| File | Contents |
+| --- | --- |
+| `config.toml` | Scanning, layout, rendering, and behavior (this page) |
+| `keymap.toml` | [Key bindings](keymap.md) |
+| `theme.toml` | [Colors](theme.md) |
 
-Generated `config.toml` files include comments for the available options. When
-new fields are added later, `gallery-tui` writes the missing defaults back using
-the same commented format; repeated preset fields share one explanation instead
-of duplicating the same comment for every preset.
+The config directory is `~/.config/gallery-tui/` on Linux and macOS
+(`$XDG_CONFIG_HOME/gallery-tui/` when that variable is set) and
+`%APPDATA%\gallery-tui\` on Windows.
 
-Existing files are normalized when they only miss fields introduced by a newer
-version. If a configuration file cannot be parsed or the active layout is no
-longer compatible, gallery-tui backs it up as `*.bak.<timestamp>` and writes a
-fresh default file.
+Missing files are created with the defaults on startup. The generated
+`config.toml` has a comment above each field.
 
-## `config.toml`
+On every start gallery-tui also fills in fields that a file lacks, such as
+options added by a newer version, and writes the file back if that changed its
+content. A file that no longer parses, or whose startup layout is invalid, is
+renamed to `<name>.bak.<pid>.<timestamp>` and replaced with a default file.
 
-Top-level fields:
+## Top Level
 
-- `recursive`: scan subdirectories when true
-- `initial_sort`: initial sort spec, such as `name_asc`
-- `supported_extensions`: image extensions to scan
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `recursive` | `false` | Also scan subdirectories. Symlinked directories are not followed. |
+| `initial_sort` | `"name_asc"` | Startup sort, written `<field>_<asc\|desc>` |
+| `supported_extensions` | see below | File extensions to load, without the dot, any case |
+
+`initial_sort` accepts the [built-in sort fields](commands.md#sort-field-ascdesc)
+and `metadata:<tag>` for a metadata tag, for example `modified_desc` or
+`metadata:DateTimeOriginal_asc`. An unrecognized value falls back to
+`name_asc`.
+
+The default extensions are `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp`, `tif`,
+`tiff`, `avif`, `qoi`, `ico`, `pnm`, `tga`, and `svg`. See
+[Rendering](rendering.md#formats) for how each is drawn.
 
 ## `[layout]`
 
-Layout has one active preset plus shared card style fields:
+The browser shows one layout preset at a time. `[layout]` selects the startup
+preset and holds card settings that presets can override.
 
-- `active`: preset name to use at startup
-- `active_args`: optional positional arguments for the active preset
-- `gap_x`, `gap_y`: spacing between cards
-- `card_style`: `image_only` or image with filename
-- `show_filename`: show or hide filename
-- `filename_position`: `top`, `bottom`, `left`, or `right`
-- `image_alignment`: `center` or `left`
-- `image_ratio`: proportion of card content reserved for the image, from `0.1` to `0.95`
-- `label_lines`: fixed filename line count for top/bottom labels; `0` uses `image_ratio`
-- `show_border`: show or hide card borders
-- `padding`: content padding inside cards; in bordered cards this is applied inside the border
-- `presets`: named layouts available to `:layout`
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `active` | `"grid"` | Preset used at startup |
+| `active_args` | `["4", "2"]` | Arguments for that preset, as with `:layout` |
+| `gap_x`, `gap_y` | `0`, `0` | Space between cards, in cells |
+| `card_style` | `"image_with_name"` | `"image_only"` hides the filename |
+| `show_filename` | `true` | Show the filename |
+| `filename_position` | `"bottom"` | `top`, `bottom`, `left`, or `right` |
+| `image_alignment` | `"center"` | `center` or `left`, within the card |
+| `image_ratio` | `0.75` | Share of the card given to the image when a filename is shown, `0.1` to `0.95` |
+| `label_lines` | `0` | Filename lines for `top`/`bottom` labels; `0` sizes the label from `image_ratio` |
+| `show_border` | `true` | Draw a border around each card |
+| `padding` | `1` | Space between the card edge (inside the border) and its content |
 
-Each preset has a `strategy` and a `params` list. `params` defines which
-positional command arguments are accepted and how they map onto preset fields.
-Running `:layout` updates `active` and `active_args` in this file. Running
-`:layout-use` changes only the current session.
+`:layout` rewrites `active` and `active_args`; `:layout-use` changes the layout
+without touching the file.
 
-Default presets:
+### Presets
+
+Presets live under `[layout.presets.<name>]`; each name can be used with
+`:layout <name>`. The three built-in presets are always present, and you can
+add your own:
 
 ```toml
-[layout]
-active = "grid"
-active_args = ["4", "2"]
-gap_x = 0
-gap_y = 0
-show_border = true
-padding = 1
-
 [layout.presets.grid]
 strategy = "grid"
 params = ["columns", "rows"]
 columns = 3
 rows = 2
-gap_x = 0
-gap_y = 0
 label_lines = 1
 show_border = false
-padding = 1
 
 [layout.presets.list]
 strategy = "list"
 params = ["items"]
 items = 12
-gap_y = 0
 filename_position = "right"
 image_alignment = "left"
 image_ratio = 0.35
@@ -86,58 +91,74 @@ columns = 0
 card_width = 34
 label_lines = 1
 show_border = false
-padding = 1
+
+[layout.presets.big]
+strategy = "grid"
+params = []
+columns = 2
+rows = 1
 ```
 
-Supported preset fields:
+(Excerpt: the generated file lists every field of each preset.)
 
-- `strategy`: `grid`, `list`, or `masonry`
-- `params`: positional parameter names accepted by `:layout`
-- `columns`: fixed column count, or `0` for masonry automatic columns
-- `rows`: visible rows for grid layouts
-- `items`: visible items per page for list layouts
-- `card_width`, `card_height`: fallback card dimensions in terminal cells
-- `gap_x`, `gap_y`: optional preset-specific spacing overrides
-- `card_style`, `show_filename`, `filename_position`: optional preset-specific
-  style overrides
-- `image_alignment`: optional preset-specific preview alignment override
-- `image_ratio`: optional preset-specific image/text space ratio override
-- `label_lines`: optional preset-specific fixed top/bottom filename height
-- `show_border`: optional preset-specific border override
-- `padding`: optional preset-specific content padding override
+| Field | Meaning |
+| --- | --- |
+| `strategy` | `grid`, `list`, or `masonry` |
+| `params` | Names of the fields that `:layout` arguments set, in order |
+| `columns` | Grid columns; masonry columns, where `0` fits as many as the width allows |
+| `rows` | Grid rows per screen |
+| `items` | List items per screen |
+| `card_width` | Masonry card width in cells |
+| `card_height` | Masonry card height for images whose size is unknown |
+| `gap_x`, `gap_y`, `card_style`, `show_filename`, `filename_position`, `image_alignment`, `image_ratio`, `label_lines`, `show_border`, `padding` | Optional overrides of the `[layout]` fields |
 
-When an existing file only misses newer fields, gallery-tui writes the parsed
-defaults back into the file. When a file is incompatible, the old file is
-backed up and replaced with a fresh default file.
+`params` may name any field in this table except `strategy` and `params`.
+Numbers must be whole and non-negative, `image_ratio` takes a decimal, and
+booleans accept `true`/`false`, `yes`/`no`, `on`/`off`, or `1`/`0`. When the
+first two params are `columns` and `rows`, one `<columns>x<rows>` argument such
+as `3x3` also works.
 
 ## `[render]`
 
-Render fields:
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `auto_detect` | `true` | Use the detected terminal graphics support and colors. When `false`, only Chafa text output is used. |
+| `chafa_bin` | `"chafa"` | Chafa executable for text output |
+| `chafa_args` | see below | Arguments passed to Chafa |
+| `chafa_threads` | `1` | `--threads` value for each Chafa run; `0` leaves it to Chafa |
+| `max_concurrent` | `4` | Images rendered at the same time |
+| `preload_ahead`, `preload_behind` | `6`, `2` | Images after and before the focused one to render in advance |
+| `raw_memory_cache_max_bytes` | `134217728` (128 MiB) | Memory for finished renders |
+| `compressed_memory_cache_max_bytes` | `268435456` (256 MiB) | Memory for compressed renders |
+| `disk_cache_max_bytes` | `536870912` (512 MiB) | Disk space for the render cache, enforced at startup |
+| `cache_compression_level` | `3` | zstd level for cached renders |
+| `cache_compression_threads` | `2` | zstd worker threads; `0` compresses on the calling thread |
+| `zellij_sixel` | `"off"` | Sixel inside Zellij: `off`, `auto`, or `on` (see [Terminal Graphics](terminal-graphics.md#zellij)) |
 
-- `chafa_bin`: Chafa executable
-- `auto_detect`: detect terminal graphics support
-- `chafa_args`: extra Chafa fallback arguments
-- `max_concurrent`: maximum concurrent render tasks
-- `chafa_threads`: Chafa threads per process
-- `preload_ahead`, `preload_behind`: preloading window around focus
-- `raw_memory_cache_max_bytes`: L1 decoded render cache size limit
-- `compressed_memory_cache_max_bytes`: L2 compressed in-memory cache size limit
-- `disk_cache_max_bytes`: L3 disk render cache size limit
-- `cache_compression_level`: zstd compression level
-- `cache_compression_threads`: zstd compression threads
-- `zellij_sixel`: `off`, `auto`, or `on`
+The default `chafa_args` are `--format=symbols`, `--colors=full`,
+`--symbols=block`, `--animate=off`, and `--polite=on`. gallery-tui always sets
+`--format`, `--probe`, `--relative`, and `--passthrough` itself, and adds
+`--scale=max` unless you pass `--scale`. With `auto_detect`, `--colors` and
+`--symbols` follow the terminal's color support.
 
-`max_concurrent` is the global render worker limit. Preloading uses the same
-limit but leaves one worker slot free for the focused image when possible.
-Cache size values use bytes. A value of `0` disables that tier's size limit.
-`cache_max_bytes` is still accepted as an old name for `disk_cache_max_bytes`.
+A size of `0` removes that cache's limit. `cache_max_bytes` is still accepted
+as an older name for `disk_cache_max_bytes`. `render.passthrough`, if present in
+an older file, is ignored: tmux and GNU screen passthrough is detected
+automatically.
 
 ## `[behavior]`
 
-Behavior fields:
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `select_moves_focus` | `true` | `space` moves focus to the next image after toggling the selection |
+| `frame_sync_navigation` | `true` | Apply at most one navigation step per drawn frame and drop extra queued key repeats, so holding a key does not run ahead of the screen. Set to `false` to process every repeat. |
+| `scroll_lines` | `4` | Unused; kept so older files stay valid |
 
-- `scroll_lines`: retained for scroll behavior compatibility
-- `select_moves_focus`: move focus to the next image after `space`
-- `frame_sync_navigation`: when true, accept at most one browser/detail
-  navigation step before the next terminal frame is drawn; set to false for
-  lower-latency repeated key handling on fast render paths
+## Environment Variables
+
+| Variable | Effect |
+| --- | --- |
+| `GALLERY_TUI_RENDER_MODES` | Override the render mode order, for example `symbols` or `kitty,symbols` (see [Terminal Graphics](terminal-graphics.md#choosing-render-modes)) |
+| `GALLERY_TUI_TMPDIR` | Directory for temporary files such as editor drafts |
+| `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` | Base config and cache directories on Linux and macOS |
+| `EDITOR`, `VISUAL` | Editor for `ctrl-g` and metadata editing; `EDITOR` is tried first, then `VISUAL`, then `vi` |

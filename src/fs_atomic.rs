@@ -1,6 +1,6 @@
 use std::{
   ffi::OsString,
-  io::{self, Write},
+  io,
   path::{Path, PathBuf},
   sync::atomic::{AtomicU64, Ordering},
   time::{SystemTime, UNIX_EPOCH},
@@ -22,18 +22,6 @@ pub async fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
   result
 }
 
-pub fn write_sync(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
-  if let Some(parent) = path.parent() {
-    std::fs::create_dir_all(parent)?;
-  }
-  let temporary = temporary_path(path);
-  let result = write_then_rename_sync(path, &temporary, contents.as_ref());
-  if result.is_err() {
-    let _ = std::fs::remove_file(&temporary);
-  }
-  result
-}
-
 async fn write_then_rename(path: &Path, temporary: &Path, contents: &[u8]) -> io::Result<()> {
   let mut file = tokio::fs::OpenOptions::new()
     .write(true)
@@ -44,17 +32,6 @@ async fn write_then_rename(path: &Path, temporary: &Path, contents: &[u8]) -> io
   file.flush().await?;
   drop(file);
   rename_replace(temporary, path).await
-}
-
-fn write_then_rename_sync(path: &Path, temporary: &Path, contents: &[u8]) -> io::Result<()> {
-  let mut file = std::fs::OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(temporary)?;
-  file.write_all(contents)?;
-  file.flush()?;
-  drop(file);
-  rename_replace_sync(temporary, path)
 }
 
 async fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
@@ -69,17 +46,6 @@ async fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
   #[cfg(not(windows))]
   {
     tokio::fs::rename(from, to).await
-  }
-}
-
-fn rename_replace_sync(from: &Path, to: &Path) -> io::Result<()> {
-  #[cfg(windows)]
-  {
-    windows_rename_replace(from, to)
-  }
-  #[cfg(not(windows))]
-  {
-    std::fs::rename(from, to)
   }
 }
 

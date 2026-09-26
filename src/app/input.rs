@@ -137,7 +137,7 @@ impl App {
               rename_applied = true;
             }
             metadata::write_metadata_with_exiftool(&to, &edit.tags)?;
-            Ok(metadata::refresh_metadata_after_write(to.clone()))
+            Ok(metadata::read_image_metadata(&to))
           })();
           let _ = tx.send(AsyncEvent::MetadataWrite(MetadataWriteOutcome {
             from: path,
@@ -270,8 +270,6 @@ impl App {
         self.set_message(format!("unknown action: {other}"));
       }
     }
-
-    let _ = tx;
     effect
   }
 

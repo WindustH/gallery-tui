@@ -1,20 +1,25 @@
 # gallery-tui
 
-`gallery-tui` is a terminal image gallery built with Ratatui. It scans an image
-folder and displays the images as navigable cards in a TUI.
+`gallery-tui` is a terminal image gallery. Point it at a folder and browse the
+images as cards, open any of them full size, and sort, select, or rename them
+without leaving the terminal.
 
 https://github.com/user-attachments/assets/f69182bb-49cd-429c-825d-6cae8e5c43c1
 
 ## Features
 
-- Scrollable image-card gallery with keyboard and mouse focus navigation.
-- Switchable grid, list, and masonry layouts.
-- Detail view with large image preview and filesystem/EXIF metadata.
-- Which-key style hints.
-- Rename, select, batch path export, refresh, cache clearing, and flexible sort commands.
-- Terminal graphics support with Kitty, Sixel, iTerm2, Chafa symbols, and ASCII fallback.
-- SVG support: vector files are rasterized on demand (with resvg) and cached, then rendered like any other image.
-- On-demand async rendering with zstd-compressed LRU render cache.
+- Browse a folder as a grid, list, or masonry of image cards, with the keyboard
+  or the mouse.
+- Open a detail view with a large preview and the file's EXIF metadata.
+- Real images in terminals with Kitty, Sixel, or iTerm2 graphics, including
+  under tmux and Zellij, and colored text everywhere else.
+- SVG files are drawn like any other image.
+- Sort by name, date, size, dimensions, or any EXIF tag.
+- Select images and print their paths for other tools, rename files, and edit
+  metadata in your `$EDITOR`.
+- Which-key hints and fully remappable keys.
+- Fast navigation: images render in the background around the focus and are
+  cached in memory and on disk.
 
 ## Usage
 
@@ -24,15 +29,17 @@ gallery-tui /path/to/image.png
 gallery-tui --browser /path/to/image.png
 ```
 
-Opening a single image starts in detail view. Pressing `q` exits immediately;
-with `--browser`, `q` returns to the folder browser instead.
+Opening a single image starts in detail view, where `q` quits. With
+`--browser`, `q` returns to the folder instead.
 
-Batch path output from `c p` is written to stdout after the UI exits, so it can
-be piped:
+`c p` quits and prints the selected paths (or the focused image's path) to
+stdout, so they can be piped:
 
 ```sh
 gallery-tui ~/Pictures | other-tool
 ```
+
+Press `f1` in any view to see its key bindings.
 
 ## Installation
 
@@ -62,6 +69,11 @@ latest git version from source:
 brew install --HEAD WindustH/tap/gallery-tui
 ```
 
+Install [Chafa](https://hpjansson.org/chafa/) for text-mode rendering in
+terminals without graphics support, and [ExifTool](https://exiftool.org/) if
+you want to edit metadata tags.
+
 ## Documentation
 
-[doc/index.md](doc/index.md).
+See [doc/index.md](doc/index.md) for controls, commands, configuration, and
+troubleshooting.

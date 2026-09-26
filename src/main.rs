@@ -21,24 +21,21 @@ use std::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
   },
-  thread,
-  time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use crossterm::event as crossterm_event;
 use framework_tui::edit_text_in_editor;
 use tokio::sync::mpsc;
 
 use crate::{
   app::{App, EditorRequest, InputEffect},
   event::AsyncEvent,
-  model::sort_images,
+  model::{ImageItem, sort_images},
   render::RenderStore,
   terminal::Tui,
 };
-use img_tui::{NativeImageConfig, RenderMode, capability};
+use img_tui::{NativeImageConfig, RenderMode, TerminalCapability, capability};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -81,47 +78,13 @@ async fn main() -> Result<()> {
     log_path = %log_path.display(),
     "gallery-tui starting"
   );
-  match cache::enforce_render_cache_limit(
-    &settings.cache_dir,
+  spawn_cache_cleanup(
+    settings.cache_dir.clone(),
     settings.config.render.disk_cache_max_bytes,
-  )
-  .await
-  {
-    Ok(report) => tracing::info!(
-      before_bytes = report.before_bytes,
-      after_bytes = report.after_bytes,
-      removed_files = report.removed_files,
-      removed_bytes = report.removed_bytes,
-      max_bytes = settings.config.render.disk_cache_max_bytes,
-      "render cache cleanup finished"
-    ),
-    Err(error) => tracing::warn!(%error, "render cache cleanup failed"),
-  }
+  );
 
   let terminal_capability = capability::detect();
   tracing::info!(?terminal_capability, "detected terminal capability");
-
-  let mut effective_render = settings.config.render.clone();
-  if effective_render.auto_detect {
-    effective_render.apply_terminal_capability(&terminal_capability);
-    tracing::info!(?effective_render.chafa_args, "selected chafa fallback mode");
-  }
-  let render_modes = if let Some(modes) = capability::render_modes_override_from_env() {
-    tracing::info!(
-      env = capability::RENDER_MODES_ENV,
-      modes = ?modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
-      "render mode order overridden by environment"
-    );
-    modes
-  } else if effective_render.auto_detect {
-    terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
-  } else {
-    vec![RenderMode::Symbols, RenderMode::Ascii]
-  };
-  tracing::info!(
-      modes = ?render_modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
-      "render mode order"
-  );
 
   let mut images = scanner::scan_images(startup.root.clone(), &settings.config).await?;
   let initial_sort = settings.config.initial_sort_spec();
@@ -129,81 +92,196 @@ async fn main() -> Result<()> {
   let focused = focus_index(&images, startup.focus.as_deref())?;
 
   let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
-  let input_enabled = Arc::new(AtomicBool::new(true));
-  let input_generation = Arc::new(AtomicU64::new(0));
-  spawn_input_thread(tx.clone(), input_enabled.clone(), input_generation.clone());
+  let input_control = InputControl::new();
+  terminal::spawn_input_thread(
+    tx.clone(),
+    input_control.enabled.clone(),
+    input_control.generation.clone(),
+  );
+  forward_termination_signals(&tx);
 
+  let mut renderer = render_store(&settings, &terminal_capability);
   let mut app = App::new(startup.root, settings, images);
   app.focused = focused;
   if startup.focus.is_some() {
     app.enter_detail(startup.detail_back_quits);
   }
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
-  let native_config = NativeImageConfig {
-    cell_pixels: terminal_capability.cell_pixels,
-    passthrough: terminal_capability.passthrough().map(str::to_string),
-    kitty_unicode_placeholders: terminal_capability.kitty_unicode_placeholders(),
-  };
-  let mut renderer = RenderStore::new(
-    app.settings.cache_dir.clone(),
-    effective_render,
-    native_config,
-    render_modes,
-  );
 
   let mut tui = Tui::new()?;
+  // Redraw only after something happened: every state change, render result,
+  // and resize arrives as an event.
   loop {
     tui.draw(|frame| ui::draw(frame, &mut app, &mut renderer, &tx))?;
     if app.should_quit() {
       break;
     }
     if let Some(request) = app.take_editor_request() {
-      input_enabled.store(false, Ordering::SeqCst);
-      input_generation.fetch_add(1, Ordering::SeqCst);
-      tui.suspend()?;
-      let result = edit_text_in_editor(request.initial_text(), &temp_dir);
-      let resume_result = tui.resume();
-      if resume_result.is_ok() {
-        discard_pending_terminal_events();
-      }
-      input_generation.fetch_add(1, Ordering::SeqCst);
-      input_enabled.store(true, Ordering::SeqCst);
-      match request {
-        EditorRequest::Prompt { .. } => app.finish_prompt_editor_input(result),
-        EditorRequest::Metadata { path, original, .. } => {
-          app.finish_metadata_editor_input(path, original, result)
-        }
-      }
-      resume_result?;
+      run_editor(&mut tui, &mut app, request, &input_control, &temp_dir)?;
       continue;
     }
-
-    tokio::select! {
-      Some(message) = rx.recv() => {
-        let effect = handle_async_event(message, &mut app, &mut renderer, &tx, &input_generation);
-        let frame_sync_navigation = app.settings.config.behavior.frame_sync_navigation;
-        drain_queued_events(
-          &mut rx,
-          &mut app,
-          &mut renderer,
-          &tx,
-          &input_generation,
-          frame_sync_navigation && effect == InputEffect::BrowseStep,
-          frame_sync_navigation,
-        );
-      }
-      _ = tokio::time::sleep(Duration::from_millis(33)) => {}
-    }
+    let Some(message) = rx.recv().await else {
+      break;
+    };
+    let effect = handle_async_event(
+      message,
+      &mut app,
+      &mut renderer,
+      &tx,
+      &input_control.generation,
+    );
+    let frame_sync_navigation = app.settings.config.behavior.frame_sync_navigation;
+    drain_queued_events(
+      &mut rx,
+      &mut app,
+      &mut renderer,
+      &tx,
+      &input_control.generation,
+      frame_sync_navigation && effect == InputEffect::BrowseStep,
+      frame_sync_navigation,
+    );
   }
 
   tui.restore()?;
   if let Some(paths) = app.take_stdout_paths() {
-    let mut stdout = io::stdout().lock();
-    for path in paths {
-      writeln!(stdout, "{}", path.display())?;
+    write_paths(&mut io::stdout().lock(), &paths)?;
+  }
+
+  Ok(())
+}
+
+/// Trim the disk render cache to `max_bytes` in the background, so a large
+/// cache does not delay the first frame.
+fn spawn_cache_cleanup(cache_dir: PathBuf, max_bytes: u64) {
+  tokio::spawn(async move {
+    match cache::enforce_render_cache_limit(&cache_dir, max_bytes).await {
+      Ok(report) => tracing::info!(
+        before_bytes = report.before_bytes,
+        after_bytes = report.after_bytes,
+        removed_files = report.removed_files,
+        removed_bytes = report.removed_bytes,
+        max_bytes,
+        "render cache cleanup finished"
+      ),
+      Err(error) => tracing::warn!(%error, "render cache cleanup failed"),
+    }
+  });
+}
+
+/// Pick the render mode order and build the render store.
+fn render_store(settings: &config::Settings, capability: &TerminalCapability) -> RenderStore {
+  let mut render = settings.config.render.clone();
+  if render.auto_detect {
+    render.apply_terminal_capability(capability);
+    tracing::info!(?render.chafa_args, "selected chafa fallback mode");
+  }
+  let modes = if let Some(modes) = capability::render_modes_override_from_env() {
+    tracing::info!(
+      env = capability::RENDER_MODES_ENV,
+      modes = ?modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
+      "render mode order overridden by environment"
+    );
+    modes
+  } else if render.auto_detect {
+    capability.preferred_render_modes(&render.zellij_sixel)
+  } else {
+    vec![RenderMode::Symbols, RenderMode::Ascii]
+  };
+  tracing::info!(
+    modes = ?modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
+    "render mode order"
+  );
+  let native_config = NativeImageConfig {
+    cell_pixels: capability.cell_pixels,
+    passthrough: capability.passthrough().map(str::to_string),
+    kitty_unicode_placeholders: capability.kitty_unicode_placeholders(),
+  };
+  RenderStore::new(settings.cache_dir.clone(), render, native_config, modes)
+}
+
+/// Shared switches between the UI loop and the terminal input thread.
+struct InputControl {
+  enabled: Arc<AtomicBool>,
+  generation: Arc<AtomicU64>,
+}
+
+impl InputControl {
+  fn new() -> Self {
+    Self {
+      enabled: Arc::new(AtomicBool::new(true)),
+      generation: Arc::new(AtomicU64::new(0)),
     }
   }
 
+  fn pause(&self) {
+    self.enabled.store(false, Ordering::SeqCst);
+    self.generation.fetch_add(1, Ordering::SeqCst);
+  }
+
+  fn resume(&self) {
+    self.generation.fetch_add(1, Ordering::SeqCst);
+    self.enabled.store(true, Ordering::SeqCst);
+  }
+}
+
+/// Hand the terminal to `$EDITOR`, then apply the edited text.
+fn run_editor(
+  tui: &mut Tui,
+  app: &mut App,
+  request: EditorRequest,
+  input: &InputControl,
+  temp_dir: &Path,
+) -> Result<()> {
+  input.pause();
+  tui.suspend()?;
+  let result = edit_text_in_editor(request.initial_text(), temp_dir);
+  let resume_result = tui.resume();
+  if resume_result.is_ok() {
+    terminal::discard_pending_input();
+  }
+  input.resume();
+  match request {
+    EditorRequest::Prompt { .. } => app.finish_prompt_editor_input(result),
+    EditorRequest::Metadata { path, original, .. } => {
+      app.finish_metadata_editor_input(path, original, result)
+    }
+  }
+  resume_result
+}
+
+/// Quit cleanly (restoring the terminal) on SIGTERM or SIGHUP.
+#[cfg(unix)]
+fn forward_termination_signals(tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  use tokio::signal::unix::{SignalKind, signal};
+  for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+    let Ok(mut stream) = signal(kind) else {
+      continue;
+    };
+    let tx = tx.clone();
+    tokio::spawn(async move {
+      if stream.recv().await.is_some() {
+        let _ = tx.send(AsyncEvent::Terminate);
+      }
+    });
+  }
+}
+
+#[cfg(not(unix))]
+fn forward_termination_signals(_tx: &mpsc::UnboundedSender<AsyncEvent>) {}
+
+/// Print one path per line. On Unix the raw bytes are written so paths that
+/// are not valid UTF-8 survive a pipe unchanged.
+fn write_paths(out: &mut impl Write, paths: &[PathBuf]) -> io::Result<()> {
+  for path in paths {
+    #[cfg(unix)]
+    {
+      use std::os::unix::ffi::OsStrExt;
+      out.write_all(path.as_os_str().as_bytes())?;
+      out.write_all(b"\n")?;
+    }
+    #[cfg(not(unix))]
+    writeln!(out, "{}", path.display())?;
+  }
   Ok(())
 }
 
@@ -247,6 +325,7 @@ fn handle_async_event(
       InputEffect::Other
     }
     AsyncEvent::Scan(outcome) => {
+      renderer.forget_failures();
       app.finish_scan(outcome);
       InputEffect::Other
     }
@@ -265,6 +344,11 @@ fn handle_async_event(
     }
     AsyncEvent::MetadataWrite(outcome) => {
       app.finish_metadata_write(outcome);
+      InputEffect::Other
+    }
+    #[cfg(unix)]
+    AsyncEvent::Terminate => {
+      app.request_quit();
       InputEffect::Other
     }
   }
@@ -335,7 +419,7 @@ fn startup_target(input: PathBuf, browser: bool) -> Result<StartupTarget> {
   bail!("{} is not a file or directory", input.display())
 }
 
-fn focus_index(images: &[crate::model::ImageItem], focus: Option<&Path>) -> Result<usize> {
+fn focus_index(images: &[ImageItem], focus: Option<&Path>) -> Result<usize> {
   let Some(focus) = focus else {
     return Ok(0);
   };
@@ -348,57 +432,4 @@ fn focus_index(images: &[crate::model::ImageItem], focus: Option<&Path>) -> Resu
         focus.display()
       )
     })
-}
-
-fn spawn_input_thread(
-  tx: mpsc::UnboundedSender<AsyncEvent>,
-  enabled: Arc<AtomicBool>,
-  generation: Arc<AtomicU64>,
-) {
-  thread::spawn(move || {
-    loop {
-      if !enabled.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(25));
-        continue;
-      }
-      match crossterm_event::poll(Duration::from_millis(50)) {
-        Ok(true) => {
-          if !enabled.load(Ordering::SeqCst) {
-            continue;
-          }
-          let Ok(input) = crossterm_event::read() else {
-            break;
-          };
-          if !enabled.load(Ordering::SeqCst) {
-            continue;
-          }
-          let generation = generation.load(Ordering::SeqCst);
-          if tx
-            .send(AsyncEvent::Input {
-              event: input,
-              generation,
-            })
-            .is_err()
-          {
-            break;
-          }
-        }
-        Ok(false) => {}
-        Err(_) => break,
-      }
-    }
-  });
-}
-
-fn discard_pending_terminal_events() {
-  for _ in 0..256 {
-    match crossterm_event::poll(Duration::from_millis(0)) {
-      Ok(true) => {
-        if crossterm_event::read().is_err() {
-          break;
-        }
-      }
-      Ok(false) | Err(_) => break,
-    }
-  }
 }

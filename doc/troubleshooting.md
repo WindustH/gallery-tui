@@ -1,38 +1,57 @@
 # Troubleshooting
 
-## Raw Escape Sequences Appear
+The log of the last run is the newest file in `logs/` under the
+[cache directory](cache-and-logs.md); it records the detected terminal, the
+chosen render modes, and every render error.
 
-If raw image protocol bytes appear as terminal text, use a safer render mode:
+## Images Show "render failed"
 
-- under Zellij 0.45+, KGP is auto-detected; keep
-  `render.zellij_sixel = "off"` unless Sixel is also wanted
-- use Chafa symbols or ASCII fallback
+The card shows the error from each render mode that was tried.
 
-## Images Do Not Fill Preview Space
+- `failed to run chafa`: install [Chafa](https://hpjansson.org/chafa/), or set
+  `render.chafa_bin` to its path. Then run `:clear-cache` to retry.
+- `failed to decode` for a graphics mode followed by a Chafa error: the file is
+  damaged or in a format neither decoder reads.
 
-Native protocol rendering scales images to the target preview bounds, including
-upscaling small images. Existing old cache entries may need to be cleared:
+Failed images are retried after `:refresh` or `:clear-cache`.
 
-```text
-:clear-cache
+## Raw Escape Sequences Appear as Text
+
+The terminal (or a multiplexer between it and gallery-tui) does not understand
+the graphics protocol that was detected. Force text output:
+
+```sh
+GALLERY_TUI_RENDER_MODES=symbols gallery-tui ~/Pictures
 ```
 
-## Cache Uses Too Much Space
+or set `render.auto_detect = false` in `config.toml`. Under Zellij, keep
+`render.zellij_sixel = "off"` unless Sixel is known to work.
 
-Lower:
+## Images Are Cut Off or Do Not Fill Their Cards
+
+gallery-tui fits images using the terminal's cell size in pixels. If the
+terminal does not report it, a size of 8x16 pixels is assumed. Renders cached by
+older versions may also be sized differently; `:clear-cache` removes them.
+
+## The Cache Uses Too Much Space
+
+Lower the disk limit, which is applied at the next start:
 
 ```toml
 [render]
 disk_cache_max_bytes = 268435456
 ```
 
-Or clear the cache from inside the TUI:
-
-```text
-:clear-cache
-```
+or delete the cache right away with `:clear-cache`.
 
 ## Metadata Is Missing
 
-Only available EXIF tags are shown. Some formats do not contain EXIF metadata,
-and some images may have metadata stripped.
+Only EXIF tags are read, and only from JPEG, TIFF, PNG, WebP, and HEIF-based
+files. Many images, such as screenshots or files exported for the web, carry
+no EXIF data.
+
+## A Config File Was Reset
+
+A file that no longer parses was renamed to `<name>.bak.<pid>.<timestamp>` in
+the config directory and replaced with defaults. Copy your settings back from
+the backup.

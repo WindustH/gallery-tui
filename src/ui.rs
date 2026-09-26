@@ -15,19 +15,18 @@ use crate::{
   app::{App, DetailPage, ViewMode},
   config::{EffectiveLayoutConfig, ThemeConfig},
   event::AsyncEvent,
-  layout::{compute_browser_layout, screen_rect},
+  layout::{BrowserLayout, compute_browser_layout, screen_rect},
   model::ImageItem,
   render::RenderStore,
   terminal::FrameOutput,
 };
-use img_tui::ProtocolOverlay;
 
 mod footer;
 mod image;
 mod modal;
 
 use footer::{completion_overlay_area, draw_command_completion, draw_footer, footer_height};
-use image::{ImageAlignment, draw_rendered_image, fit_image_rect, image_alignment_for_layout};
+use image::{FrameImages, ImageAlignment, image_alignment_for_layout};
 use modal::{draw_confirm, draw_key_help};
 
 pub fn draw(
@@ -36,10 +35,8 @@ pub fn draw(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
 ) -> FrameOutput {
-  let mut protocol_overlays = Vec::new();
+  let mut images = FrameImages::new(renderer, tx, app.terminal_cell_pixels);
   let mut cursor_position = None;
-  let mut preserve_overlays = false;
-  let mut preserve_areas = Vec::new();
   let area = frame.area();
   let footer_height = footer_height(app, area.width).min(area.height);
   let chunks = Layout::default()
@@ -51,28 +48,8 @@ pub fn draw(
   let completion_area = completion_overlay_area(app, area, footer);
 
   match app.view {
-    ViewMode::Browser => draw_browser(
-      frame,
-      app,
-      renderer,
-      tx,
-      main,
-      &mut protocol_overlays,
-      &mut preserve_overlays,
-      &mut preserve_areas,
-      &[],
-    ),
-    ViewMode::Detail => draw_detail(
-      frame,
-      app,
-      renderer,
-      tx,
-      main,
-      &mut protocol_overlays,
-      &mut preserve_overlays,
-      &mut preserve_areas,
-      &[],
-    ),
+    ViewMode::Browser => draw_browser(frame, app, &mut images, main),
+    ViewMode::Detail => draw_detail(frame, app, &mut images, main),
   }
   draw_footer(frame, app, footer, &mut cursor_position);
   // Modal rects replace kitty U=1 placeholder cells. Uncovered cells keep
@@ -93,44 +70,36 @@ pub fn draw(
     // Modals own the interaction: hide the cursor while they are open.
     cursor_position = None;
   }
-  let mut output = FrameOutput::new(protocol_overlays, cursor_position);
-  output.preserve_overlays = preserve_overlays;
-  output.preserve_areas = if preserve_overlays {
-    preserve_areas
-  } else {
-    Vec::new()
-  };
+  let mut output = FrameOutput::new(images.overlays, cursor_position);
+  output.preserve_overlays = images.preserve_overlays;
+  if images.preserve_overlays {
+    output.preserve_areas = images.preserve_areas;
+  }
   output.occluders = occluders;
   output
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_browser(
-  frame: &mut Frame,
-  app: &mut App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  protocol_overlays: &mut Vec<ProtocolOverlay>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  occlusion_areas: &[Rect],
-) {
-  let bg = app.settings.theme.color(&app.settings.theme.background);
-  let foreground = app.settings.theme.color(&app.settings.theme.foreground);
+fn fill_background(frame: &mut Frame, theme: &ThemeConfig, area: Rect) {
   frame.render_widget(
-    Block::default().style(Style::default().bg(bg).fg(foreground)),
+    Block::default().style(
+      Style::default()
+        .bg(theme.color(&theme.background))
+        .fg(theme.color(&theme.foreground)),
+    ),
     area,
   );
+}
+
+fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area: Rect) {
+  fill_background(frame, &app.settings.theme, area);
 
   let layout_config = app.settings.config.layout.effective();
   let layout = compute_browser_layout(&app.images, area, &layout_config);
-  let layout_changed = app.browser_viewport != Some(area)
-    || app
-      .last_layout
-      .as_ref()
-      .is_some_and(|previous| previous != &layout);
-  app.update_browser_layout(layout.clone(), area);
+  let layout_changed = app.update_browser_layout(layout, area);
+  let app = &*app;
+  let Some(layout) = app.browser_layout() else {
+    return;
+  };
 
   if app.images.is_empty() {
     let muted = app.settings.theme.color(&app.settings.theme.muted);
@@ -143,75 +112,59 @@ fn draw_browser(
     return;
   }
 
-  for (index, item) in app.images.iter().enumerate() {
-    let Some(card_canvas) = layout.cards.get(index).copied() else {
+  for (index, (item, card_canvas)) in app.images.iter().zip(&layout.cards).enumerate() {
+    let Some(card_area) = screen_rect(*card_canvas, area, app.browser_scroll) else {
       continue;
     };
-    let Some(card_area) = screen_rect(card_canvas, area, app.browser_scroll) else {
-      continue;
-    };
-    let top_visible = card_canvas.y >= app.browser_scroll;
-    let bottom_visible = card_canvas.y.saturating_add(u32::from(card_canvas.height))
-      <= app.browser_scroll.saturating_add(u32::from(area.height));
-    draw_card(
-      frame,
-      app,
-      renderer,
-      tx,
+    let card = CardView {
       index,
-      item,
-      card_area,
-      top_visible,
-      bottom_visible,
-      &layout_config,
-      protocol_overlays,
-      preserve_overlays,
-      preserve_areas,
-      occlusion_areas,
-    );
+      area: card_area,
+      top_clipped: card_canvas.y < app.browser_scroll,
+      bottom_clipped: card_canvas.y.saturating_add(u32::from(card_canvas.height))
+        > app.browser_scroll.saturating_add(u32::from(area.height)),
+    };
+    draw_card(frame, app, images, item, card, &layout_config);
   }
   if layout_changed {
-    *preserve_overlays = false;
-    preserve_areas.clear();
+    images.preserve_overlays = false;
+    images.preserve_areas.clear();
   }
-  preload_browser_neighbors(app, renderer, tx, &layout_config);
+  preload_browser_neighbors(app, images, layout, &layout_config);
 }
 
-#[allow(clippy::too_many_arguments)]
+/// A card's on-screen rect and whether the viewport cuts off its edges.
+struct CardView {
+  index: usize,
+  area: Rect,
+  top_clipped: bool,
+  bottom_clipped: bool,
+}
+
 fn draw_card(
   frame: &mut Frame,
   app: &App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  index: usize,
+  images: &mut FrameImages,
   item: &ImageItem,
-  area: Rect,
-  top_visible: bool,
-  bottom_visible: bool,
+  card: CardView,
   layout_config: &EffectiveLayoutConfig,
-  protocol_overlays: &mut Vec<ProtocolOverlay>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  occlusion_areas: &[Rect],
 ) {
   let theme = &app.settings.theme;
-  let focused = index == app.focused;
+  let focused = card.index == app.focused;
   let selected = app.selected.contains(&item.path);
   let (foreground, background) = card_state_colors(theme, focused, selected);
   let style = Style::default().fg(foreground).bg(background);
-  let border_style = Style::default().fg(foreground).bg(background);
   if layout_config.show_border {
     let block = Block::default()
       .borders(Borders::ALL)
-      .border_style(border_style)
+      .border_style(style)
       .style(style);
-    frame.render_widget(block, area);
-    clear_clipped_card_edges(frame, app, area, top_visible, bottom_visible);
+    frame.render_widget(block, card.area);
+    clear_clipped_card_edges(frame, theme, &card);
   } else {
-    frame.render_widget(Block::default().style(style), area);
+    frame.render_widget(Block::default().style(style), card.area);
   }
 
-  let inner = card_inner_area(area, layout_config);
+  let inner = card_inner_area(card.area, layout_config);
   if inner.width == 0 || inner.height == 0 {
     return;
   }
@@ -219,21 +172,12 @@ fn draw_card(
   if let Some(label_area) = label_area {
     draw_label(frame, &item.file_name, label_area, style);
   }
-  draw_rendered_image(
+  images.draw(
     frame,
-    app,
-    renderer,
-    tx,
     item,
-    index,
-    app.images.len(),
     image_area,
-    0,
     image_alignment_for_layout(layout_config),
-    protocol_overlays,
-    preserve_overlays,
-    preserve_areas,
-    occlusion_areas,
+    (card.index, app.images.len()),
   );
 }
 
@@ -268,49 +212,19 @@ fn state_colors(theme: &ThemeConfig, foreground: &str, background: &str) -> (Col
   )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_detail(
-  frame: &mut Frame,
-  app: &mut App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  protocol_overlays: &mut Vec<ProtocolOverlay>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  occlusion_areas: &[Rect],
-) {
-  let bg = app.settings.theme.color(&app.settings.theme.background);
-  let foreground = app.settings.theme.color(&app.settings.theme.foreground);
-  frame.render_widget(
-    Block::default().style(Style::default().bg(bg).fg(foreground)),
-    area,
-  );
+fn draw_detail(frame: &mut Frame, app: &App, images: &mut FrameImages, area: Rect) {
+  fill_background(frame, &app.settings.theme, area);
 
   let Some(item) = app.current() else {
     frame.render_widget(Paragraph::new("No image selected"), area);
     return;
   };
+  let position = (app.focused, app.images.len());
 
   match app.detail_page {
     DetailPage::Image => {
-      draw_rendered_image(
-        frame,
-        app,
-        renderer,
-        tx,
-        item,
-        app.focused,
-        app.images.len(),
-        area,
-        0,
-        ImageAlignment::Center,
-        protocol_overlays,
-        preserve_overlays,
-        preserve_areas,
-        occlusion_areas,
-      );
-      preload_detail_neighbors(app, renderer, tx, area);
+      images.draw(frame, item, area, ImageAlignment::Center, position);
+      preload_detail_neighbors(app, images, area);
     }
     DetailPage::Metadata => {
       let split = Layout::default()
@@ -325,99 +239,54 @@ fn draw_detail(
           .border_style(Style::default().fg(app.settings.theme.color(&app.settings.theme.border))),
         split[0],
       );
-      draw_rendered_image(
-        frame,
-        app,
-        renderer,
-        tx,
-        item,
-        app.focused,
-        app.images.len(),
-        preview,
-        0,
-        ImageAlignment::Center,
-        protocol_overlays,
-        preserve_overlays,
-        preserve_areas,
-        occlusion_areas,
-      );
-      preload_detail_neighbors(app, renderer, tx, preview);
-      draw_metadata(frame, app, item, split[1]);
+      images.draw(frame, item, preview, ImageAlignment::Center, position);
+      preload_detail_neighbors(app, images, preview);
+      draw_metadata(frame, &app.settings.theme, item, split[1]);
     }
   }
 }
 
 fn preload_browser_neighbors(
   app: &App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  images: &mut FrameImages,
+  layout: &BrowserLayout,
   layout_config: &EffectiveLayoutConfig,
 ) {
-  let Some(layout) = &app.last_layout else {
-    return;
-  };
-  if app.images.is_empty() {
-    return;
-  }
-
-  let start = app
-    .focused
-    .saturating_sub(app.settings.config.render.preload_behind);
+  let render = &app.settings.config.render;
+  let start = app.focused.saturating_sub(render.preload_behind);
   let end = app
     .focused
-    .saturating_add(app.settings.config.render.preload_ahead)
+    .saturating_add(render.preload_ahead)
     .min(app.images.len().saturating_sub(1));
-
+  let alignment = image_alignment_for_layout(layout_config);
   for index in start..=end {
-    let Some(card) = layout.cards.get(index).copied() else {
+    let (Some(card), Some(item)) = (layout.cards.get(index), app.images.get(index)) else {
       continue;
     };
-    let card_area = Rect::new(0, 0, card.width, card.height);
-    let inner = card_inner_area(card_area, layout_config);
+    let inner = card_inner_area(Rect::new(0, 0, card.width, card.height), layout_config);
     let (image_area, _) = split_card_content(inner, layout_config);
-    if let Some(item) = app.images.get(index) {
-      let fitted = fit_image_rect(
-        image_area,
-        item,
-        app,
-        image_alignment_for_layout(layout_config),
-      );
-      renderer.preload(item, fitted.width, fitted.height, tx);
-    }
+    images.preload(item, image_area, alignment);
   }
 }
 
-fn preload_detail_neighbors(
-  app: &App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  image_area: Rect,
-) {
+fn preload_detail_neighbors(app: &App, images: &mut FrameImages, image_area: Rect) {
   if image_area.width == 0 || image_area.height == 0 || app.images.is_empty() {
     return;
   }
-
-  let start = app
-    .focused
-    .saturating_sub(app.settings.config.render.preload_behind.min(1));
+  let render = &app.settings.config.render;
+  let start = app.focused.saturating_sub(render.preload_behind.min(1));
   let end = app
     .focused
-    .saturating_add(app.settings.config.render.preload_ahead.min(2))
-    .min(app.images.len().saturating_sub(1));
-
-  for index in start..=end {
-    if index == app.focused {
-      continue;
-    }
+    .saturating_add(render.preload_ahead.min(2))
+    .min(app.images.len() - 1);
+  for index in (start..=end).filter(|index| *index != app.focused) {
     if let Some(item) = app.images.get(index) {
-      let fitted = fit_image_rect(image_area, item, app, ImageAlignment::Center);
-      renderer.preload(item, fitted.width, fitted.height, tx);
+      images.preload(item, image_area, ImageAlignment::Center);
     }
   }
 }
 
-fn draw_metadata(frame: &mut Frame, app: &App, item: &ImageItem, area: Rect) {
-  let theme = &app.settings.theme;
+fn draw_metadata(frame: &mut Frame, theme: &ThemeConfig, item: &ImageItem, area: Rect) {
   let mut lines = vec![
     metadata_line("file", &item.file_name, theme),
     metadata_line("path", &item.path.display().to_string(), theme),
@@ -463,21 +332,15 @@ fn draw_metadata(frame: &mut Frame, app: &App, item: &ImageItem, area: Rect) {
   );
 }
 
-fn clear_clipped_card_edges(
-  frame: &mut Frame,
-  app: &App,
-  area: Rect,
-  top_visible: bool,
-  bottom_visible: bool,
-) {
-  let theme = &app.settings.theme;
+fn clear_clipped_card_edges(frame: &mut Frame, theme: &ThemeConfig, card: &CardView) {
   let style = Style::default()
     .fg(theme.color(&theme.foreground))
     .bg(theme.color(&theme.background));
-  if !top_visible {
+  let area = card.area;
+  if card.top_clipped {
     clear_row(frame, area, area.y, style);
   }
-  if !bottom_visible && area.height > 1 {
+  if card.bottom_clipped && area.height > 1 {
     clear_row(
       frame,
       area,
@@ -629,7 +492,7 @@ fn wrap_for_area(value: &str, width: usize, height: usize) -> String {
   lines.join("\n")
 }
 
-fn metadata_line(label: &str, value: &str, theme: &crate::config::ThemeConfig) -> Line<'static> {
+fn metadata_line(label: &str, value: &str, theme: &ThemeConfig) -> Line<'static> {
   Line::from(vec![
     Span::styled(
       format!("{label:>10}  "),

@@ -1,10 +1,4 @@
-use std::{
-  collections::BTreeMap,
-  fs::File,
-  io::BufReader,
-  path::{Path, PathBuf},
-  process::Command,
-};
+use std::{collections::BTreeMap, fs::File, io::BufReader, path::Path, process::Command};
 
 use tracing::debug;
 
@@ -127,13 +121,16 @@ pub fn write_metadata_with_exiftool(path: &Path, changes: &[MetadataChange]) -> 
   if changes.is_empty() {
     return Ok(());
   }
+  // exiftool replaces the file it writes; give it the symlink target so a
+  // symlinked image keeps its link and the real image gets the tags.
+  let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
   let mut command = Command::new("exiftool");
   command.arg("-overwrite_original");
   for change in changes {
     let tag = exiftool_tag_name(&change.tag)?;
     command.arg(format!("-{tag}={}", change.new_value));
   }
-  command.arg(path);
+  command.arg(target);
   let output = command
     .output()
     .map_err(|err| format!("failed to run exiftool; install exiftool or put it in PATH: {err}"))?;
@@ -148,10 +145,6 @@ pub fn write_metadata_with_exiftool(path: &Path, changes: &[MetadataChange]) -> 
       stdout.trim()
     ))
   }
-}
-
-pub fn refresh_metadata_after_write(path: PathBuf) -> Vec<ImageMetadataEntry> {
-  read_image_metadata(&path)
 }
 
 fn editable_metadata_map(entries: &[ImageMetadataEntry]) -> BTreeMap<String, String> {
@@ -220,7 +213,7 @@ fn read_exif_metadata(path: &Path) -> Result<Vec<ImageMetadataEntry>, String> {
       continue;
     }
     entries.push(ImageMetadataEntry {
-      group: format!("{:?}", field.ifd_num),
+      group: field.ifd_num.to_string(),
       name: field.tag.to_string(),
       value,
     });

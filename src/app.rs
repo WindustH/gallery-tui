@@ -11,7 +11,7 @@ use crate::{
   config::Settings,
   layout::BrowserLayout,
   metadata::{self, MetadataEdit},
-  model::{ImageItem, SortSpec},
+  model::{ImageItem, ImageMetadataEntry, SortSpec, file_label},
 };
 
 mod commands;
@@ -49,28 +49,30 @@ pub enum ConfirmDialog {
 }
 
 pub struct App {
-  pub root: PathBuf,
+  root: PathBuf,
   pub settings: Settings,
-  pub keymap: KeyBindings,
+  keymap: KeyBindings,
   pub images: Vec<ImageItem>,
   pub focused: usize,
   pub selected: BTreeSet<PathBuf>,
   pub view: ViewMode,
   pub detail_page: DetailPage,
   pub browser_scroll: u32,
-  pub detail_scroll: u16,
-  pub last_layout: Option<BrowserLayout>,
-  pub browser_viewport: Option<Rect>,
-  pub browser_view_height: u16,
+  last_layout: Option<BrowserLayout>,
+  browser_viewport: Option<Rect>,
+  browser_view_height: u16,
   pub prompt: Option<Prompt>,
   pub message: String,
   pub sort_spec: SortSpec,
-  pub scan_pending: bool,
-  pub cache_clear_pending: bool,
+  scan_pending: bool,
+  cache_clear_pending: bool,
   pub terminal_cell_pixels: Option<(u16, u16)>,
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
-  pub detail_back_quits: bool,
+  detail_back_quits: bool,
+  /// Sort field completions built from the images' metadata, cleared when
+  /// the image list or its metadata changes.
+  metadata_fields: Option<Vec<String>>,
   quit: bool,
   stdout_paths: Option<Vec<PathBuf>>,
   editor_request: Option<EditorRequest>,
@@ -92,7 +94,6 @@ impl App {
       view: ViewMode::Browser,
       detail_page: DetailPage::Image,
       browser_scroll: 0,
-      detail_scroll: 0,
       last_layout: None,
       browser_viewport: None,
       browser_view_height: 1,
@@ -105,6 +106,7 @@ impl App {
       confirm: None,
       key_help: false,
       detail_back_quits: false,
+      metadata_fields: None,
       quit: false,
       stdout_paths: None,
       editor_request: None,
@@ -115,6 +117,11 @@ impl App {
 
   pub fn should_quit(&self) -> bool {
     self.quit
+  }
+
+  #[cfg(unix)]
+  pub fn request_quit(&mut self) {
+    self.quit = true;
   }
 
   pub fn take_stdout_paths(&mut self) -> Option<Vec<PathBuf>> {
@@ -150,7 +157,7 @@ impl App {
   pub fn finish_metadata_editor_input(
     &mut self,
     path: PathBuf,
-    original: Vec<crate::model::ImageMetadataEntry>,
+    original: Vec<ImageMetadataEntry>,
     result: Result<String, String>,
   ) {
     let edited = match result {
@@ -193,7 +200,14 @@ impl App {
     self.editor_request.is_some()
   }
 
-  pub fn update_browser_layout(&mut self, layout: BrowserLayout, viewport: Rect) {
+  /// Store the layout computed for this frame and keep the focused card
+  /// visible. Returns whether the layout or viewport changed.
+  pub fn update_browser_layout(&mut self, layout: BrowserLayout, viewport: Rect) -> bool {
+    let changed = self.browser_viewport != Some(viewport)
+      || self
+        .last_layout
+        .as_ref()
+        .is_some_and(|previous| *previous != layout);
     self.browser_viewport = Some(viewport);
     self.browser_view_height = viewport.height.max(1);
     let max_scroll = layout
@@ -204,6 +218,11 @@ impl App {
     if self.view == ViewMode::Browser {
       self.ensure_focus_visible();
     }
+    changed
+  }
+
+  pub fn browser_layout(&self) -> Option<&BrowserLayout> {
+    self.last_layout.as_ref()
   }
 
   pub fn current(&self) -> Option<&ImageItem> {
@@ -216,7 +235,6 @@ impl App {
     }
     self.view = ViewMode::Detail;
     self.detail_page = DetailPage::Image;
-    self.detail_scroll = 0;
     self.detail_back_quits = back_quits;
   }
 
@@ -253,15 +271,55 @@ fn validate_new_file_name(path: &Path, file_name: &str) -> Result<PathBuf, Strin
   if !is_safe_file_name(&to, parent) {
     return Err("rename must stay in the same directory".to_string());
   }
-  if to != path && to.exists() {
+  if to != path && entry_exists(&to) && !is_case_only_rename(path, &to) {
     return Err(format!("target already exists: {}", file_label(&to)));
   }
   Ok(to)
 }
 
+/// Whether anything, including a dangling symlink, exists at `path`.
+fn entry_exists(path: &Path) -> bool {
+  std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether `to` differs from `from` only in letter case and both name the
+/// same file, as on the case-insensitive file systems macOS and Windows use
+/// by default. Such a rename must not be refused as "target exists".
+fn is_case_only_rename(from: &Path, to: &Path) -> bool {
+  let (Some(from_name), Some(to_name)) = (from.file_name(), to.file_name()) else {
+    return false;
+  };
+  from_name != to_name
+    && from_name.to_string_lossy().to_lowercase() == to_name.to_string_lossy().to_lowercase()
+    && same_file(from, to)
+}
+
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+  use std::os::unix::fs::MetadataExt;
+  match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+    (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+    _ => false,
+  }
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &Path, b: &Path) -> bool {
+  // Canonical paths carry the on-disk letter case, so two spellings of one
+  // file resolve to the same path.
+  match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+    (Ok(a), Ok(b)) => a == b,
+    _ => false,
+  }
+}
+
 fn rename_file_no_replace(from: &Path, to: &Path) -> Result<(), String> {
   if from == to {
     return Ok(());
+  }
+  if is_case_only_rename(from, to) {
+    // `to` is `from` itself, so there is nothing to protect from replacement.
+    return std::fs::rename(from, to).map_err(|err| err.to_string());
   }
   rename_file_no_replace_impl(from, to)
 }
@@ -303,7 +361,7 @@ fn rename_file_no_replace_impl(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn rename_file_no_replace_fallback(from: &Path, to: &Path) -> Result<(), String> {
-  if to.exists() {
+  if entry_exists(to) {
     return Err(format!("target already exists: {}", file_label(to)));
   }
   std::fs::rename(from, to).map_err(|err| err.to_string())
@@ -314,13 +372,6 @@ fn rename_cursor_position(file_name: &str) -> usize {
     .rfind('.')
     .filter(|idx| *idx > 0)
     .unwrap_or(file_name.len())
-}
-
-fn file_label(path: &Path) -> String {
-  path
-    .file_name()
-    .map(|name| name.to_string_lossy().into_owned())
-    .unwrap_or_else(|| path.display().to_string())
 }
 
 fn action_is_sort_command(action: &str) -> bool {
@@ -345,3 +396,50 @@ const COMMAND_NAMES: &[&str] = &[
   "layout-use",
   "help",
 ];
+
+/// Commands that take no arguments.
+const NO_ARG_COMMANDS: &[&str] = &["refresh", "clear-cache", "help"];
+
+#[cfg(all(test, unix))]
+mod tests {
+  use std::fs;
+
+  use super::*;
+
+  fn temp_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+      "gallery-tui-rename-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+  }
+
+  #[test]
+  fn rename_validation_allows_case_changes_of_the_same_file_only() {
+    let dir = temp_dir();
+    let image = dir.join("photo.JPG");
+    fs::write(&image, b"x").unwrap();
+    // A hard link stands in for a case-insensitive file system: a second name
+    // that differs only in case and refers to the same file.
+    fs::hard_link(&image, dir.join("photo.jpg")).unwrap();
+    fs::write(dir.join("other.jpg"), b"y").unwrap();
+    fs::write(dir.join("OTHER.JPG"), b"z").unwrap();
+    std::os::unix::fs::symlink(dir.join("missing"), dir.join("dangling.jpg")).unwrap();
+
+    let case_change = validate_new_file_name(&image, "photo.jpg");
+    let other = validate_new_file_name(&dir.join("other.jpg"), "OTHER.JPG");
+    let dangling = validate_new_file_name(&image, "dangling.jpg");
+    let outside = validate_new_file_name(&image, "../escape.jpg");
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(case_change, Ok(dir.join("photo.jpg")));
+    assert!(other.is_err());
+    assert!(dangling.is_err());
+    assert!(outside.is_err());
+  }
+}

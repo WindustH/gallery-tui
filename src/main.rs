@@ -165,6 +165,9 @@ fn spawn_cache_cleanup(cache_dir: PathBuf, max_bytes: u64) {
   });
 }
 
+/// Environment variable that forces the render modes, e.g. `sixel,symbols`.
+const RENDER_MODES_ENV: &str = "GALLERY_TUI_RENDER_MODES";
+
 /// Pick the render mode order and build the render store.
 fn render_store(settings: &config::Settings, capability: &TerminalCapability) -> RenderStore {
   let mut render = settings.config.render.clone();
@@ -172,9 +175,9 @@ fn render_store(settings: &config::Settings, capability: &TerminalCapability) ->
     render.apply_terminal_capability(capability);
     tracing::info!(?render.chafa_args, "selected chafa fallback mode");
   }
-  let modes = if let Some(modes) = capability::render_modes_override_from_env() {
+  let modes = if let Some(modes) = capability::render_modes_override_from_env(RENDER_MODES_ENV) {
     tracing::info!(
-      env = capability::RENDER_MODES_ENV,
+      env = RENDER_MODES_ENV,
       modes = ?modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
       "render mode order overridden by environment"
     );

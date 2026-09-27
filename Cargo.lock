@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "gallery-tui"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

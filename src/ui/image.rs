@@ -1,7 +1,6 @@
-use img_tui::ProtocolOverlay;
+use img_tui::{ProtocolOverlay, reserve_protocol_area};
 use ratatui::{
   Frame,
-  buffer::CellDiffOption,
   layout::{Alignment, Rect},
   style::{Modifier, Style},
   text::{Line, Text},
@@ -169,17 +168,4 @@ fn rendering_text(item: &ImageItem, (index, total): (usize, usize)) -> Text<'sta
     Line::from(item.file_name.clone()),
     Line::from(format!("({}/{})", index.saturating_add(1), total.max(1))),
   ])
-}
-
-/// Leave cells under a protocol image out of the text diff so ratatui does
-/// not paint over the image.
-fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
-  let buf = frame.buffer_mut();
-  for y in area.y..area.y.saturating_add(area.height) {
-    for x in area.x..area.x.saturating_add(area.width) {
-      if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.set_diff_option(CellDiffOption::Skip);
-      }
-    }
-  }
 }

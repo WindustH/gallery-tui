@@ -119,7 +119,6 @@ impl App {
     self.quit
   }
 
-  #[cfg(unix)]
   pub fn request_quit(&mut self) {
     self.quit = true;
   }

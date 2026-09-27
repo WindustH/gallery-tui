@@ -22,7 +22,6 @@ pub enum AsyncEvent {
   ConfigSave(ConfigSaveOutcome),
   MetadataWrite(MetadataWriteOutcome),
   /// The process received a termination signal.
-  #[cfg(unix)]
   Terminate,
 }
 

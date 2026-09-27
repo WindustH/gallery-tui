@@ -17,15 +17,11 @@ use std::{
   env,
   io::{self, Write},
   path::{Path, PathBuf},
-  sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-  },
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use framework_tui::edit_text_in_editor;
+use framework_tui::{EditorOptions, InputReader, edit_text_outside_tui, watch_termination_signals};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -92,13 +88,20 @@ async fn main() -> Result<()> {
   let focused = focus_index(&images, startup.focus.as_deref())?;
 
   let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
-  let input_control = InputControl::new();
-  terminal::spawn_input_thread(
-    tx.clone(),
-    input_control.enabled.clone(),
-    input_control.generation.clone(),
-  );
-  forward_termination_signals(&tx);
+  let input_tx = tx.clone();
+  let input = InputReader::spawn(move |input| {
+    input_tx
+      .send(AsyncEvent::Input {
+        event: input.event,
+        generation: input.generation,
+      })
+      .is_ok()
+  })?;
+  // Quit cleanly (restoring the terminal) on SIGTERM or SIGHUP.
+  let signal_tx = tx.clone();
+  watch_termination_signals(move |_| {
+    let _ = signal_tx.send(AsyncEvent::Terminate);
+  })?;
 
   let mut renderer = render_store(&settings, &terminal_capability);
   let mut app = App::new(startup.root, settings, images);
@@ -117,26 +120,20 @@ async fn main() -> Result<()> {
       break;
     }
     if let Some(request) = app.take_editor_request() {
-      run_editor(&mut tui, &mut app, request, &input_control, &temp_dir)?;
+      run_editor(&mut tui, &mut app, request, &input, &temp_dir)?;
       continue;
     }
     let Some(message) = rx.recv().await else {
       break;
     };
-    let effect = handle_async_event(
-      message,
-      &mut app,
-      &mut renderer,
-      &tx,
-      &input_control.generation,
-    );
+    let effect = handle_async_event(message, &mut app, &mut renderer, &tx, &input);
     let frame_sync_navigation = app.settings.config.behavior.frame_sync_navigation;
     drain_queued_events(
       &mut rx,
       &mut app,
       &mut renderer,
       &tx,
-      &input_control.generation,
+      &input,
       frame_sync_navigation && effect == InputEffect::BrowseStep,
       frame_sync_navigation,
     );
@@ -199,75 +196,30 @@ fn render_store(settings: &config::Settings, capability: &TerminalCapability) ->
   RenderStore::new(settings.cache_dir.clone(), render, native_config, modes)
 }
 
-/// Shared switches between the UI loop and the terminal input thread.
-struct InputControl {
-  enabled: Arc<AtomicBool>,
-  generation: Arc<AtomicU64>,
-}
-
-impl InputControl {
-  fn new() -> Self {
-    Self {
-      enabled: Arc::new(AtomicBool::new(true)),
-      generation: Arc::new(AtomicU64::new(0)),
-    }
-  }
-
-  fn pause(&self) {
-    self.enabled.store(false, Ordering::SeqCst);
-    self.generation.fetch_add(1, Ordering::SeqCst);
-  }
-
-  fn resume(&self) {
-    self.generation.fetch_add(1, Ordering::SeqCst);
-    self.enabled.store(true, Ordering::SeqCst);
-  }
-}
-
 /// Hand the terminal to `$EDITOR`, then apply the edited text.
 fn run_editor(
   tui: &mut Tui,
   app: &mut App,
   request: EditorRequest,
-  input: &InputControl,
+  input: &InputReader,
   temp_dir: &Path,
 ) -> Result<()> {
-  input.pause();
-  tui.suspend()?;
-  let result = edit_text_in_editor(request.initial_text(), temp_dir);
-  let resume_result = tui.resume();
-  if resume_result.is_ok() {
-    terminal::discard_pending_input();
-  }
-  input.resume();
+  let handoff = edit_text_outside_tui(
+    tui,
+    Some(input),
+    request.initial_text(),
+    temp_dir,
+    &EditorOptions::default(),
+  );
+  let result = handoff.output;
   match request {
     EditorRequest::Prompt { .. } => app.finish_prompt_editor_input(result),
     EditorRequest::Metadata { path, original, .. } => {
       app.finish_metadata_editor_input(path, original, result)
     }
   }
-  resume_result
+  handoff.terminal
 }
-
-/// Quit cleanly (restoring the terminal) on SIGTERM or SIGHUP.
-#[cfg(unix)]
-fn forward_termination_signals(tx: &mpsc::UnboundedSender<AsyncEvent>) {
-  use tokio::signal::unix::{SignalKind, signal};
-  for kind in [SignalKind::terminate(), SignalKind::hangup()] {
-    let Ok(mut stream) = signal(kind) else {
-      continue;
-    };
-    let tx = tx.clone();
-    tokio::spawn(async move {
-      if stream.recv().await.is_some() {
-        let _ = tx.send(AsyncEvent::Terminate);
-      }
-    });
-  }
-}
-
-#[cfg(not(unix))]
-fn forward_termination_signals(_tx: &mpsc::UnboundedSender<AsyncEvent>) {}
 
 /// Print one path per line. On Unix the raw bytes are written so paths that
 /// are not valid UTF-8 survive a pipe unchanged.
@@ -308,11 +260,11 @@ fn handle_async_event(
   app: &mut App,
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
-  input_generation: &AtomicU64,
+  input: &InputReader,
 ) -> InputEffect {
   match message {
     AsyncEvent::Input { event, generation } => {
-      if generation == input_generation.load(Ordering::SeqCst) {
+      if input.is_current(generation) {
         app.handle_input(event, tx)
       } else {
         InputEffect::None
@@ -346,7 +298,6 @@ fn handle_async_event(
       app.finish_metadata_write(outcome);
       InputEffect::Other
     }
-    #[cfg(unix)]
     AsyncEvent::Terminate => {
       app.request_quit();
       InputEffect::Other
@@ -359,7 +310,7 @@ fn drain_queued_events(
   app: &mut App,
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
-  input_generation: &AtomicU64,
+  input: &InputReader,
   discard_browse_inputs: bool,
   frame_sync_navigation: bool,
 ) {
@@ -371,12 +322,10 @@ fn drain_queued_events(
     let Ok(message) = rx.try_recv() else {
       break;
     };
-    if discard_browse_inputs
-      && queued_message_is_frame_sync_deferred_input(&message, app, input_generation)
-    {
+    if discard_browse_inputs && queued_message_is_frame_sync_deferred_input(&message, app, input) {
       continue;
     }
-    let effect = handle_async_event(message, app, renderer, tx, input_generation);
+    let effect = handle_async_event(message, app, renderer, tx, input);
     if frame_sync_navigation && effect == InputEffect::BrowseStep {
       discard_browse_inputs = true;
     }
@@ -386,12 +335,11 @@ fn drain_queued_events(
 fn queued_message_is_frame_sync_deferred_input(
   message: &AsyncEvent,
   app: &App,
-  input_generation: &AtomicU64,
+  input: &InputReader,
 ) -> bool {
   match message {
     AsyncEvent::Input { event, generation } => {
-      *generation == input_generation.load(Ordering::SeqCst)
-        && app.input_deferred_by_frame_sync(event)
+      input.is_current(*generation) && app.input_deferred_by_frame_sync(event)
     }
     _ => false,
   }

@@ -19,8 +19,8 @@ use std::{
   },
 };
 
-use img_tui::{NativeImageConfig, ProtocolOverlay, ProtocolPlacement, RenderMode};
-use ratatui::{layout::Rect, widgets::Paragraph};
+use img_tui::{NativeImageConfig, ProtocolImage, RenderMode};
+use ratatui::widgets::Paragraph;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::{config::RenderConfig, event::AsyncEvent, model::ImageItem};
@@ -39,39 +39,11 @@ pub enum RenderedImage {
   Protocol(ProtocolImage),
 }
 
-#[derive(Debug)]
-pub struct ProtocolImage {
-  mode: RenderMode,
-  data: String,
-  refresh: Option<String>,
-  placement: Option<ProtocolPlacement>,
-  fingerprint: u64,
-  erase: Option<String>,
-}
-
-impl ProtocolImage {
-  pub fn overlay(&self, area: Rect) -> ProtocolOverlay {
-    ProtocolOverlay {
-      area,
-      mode: self.mode,
-      data: self.data.clone(),
-      refresh: self.refresh.clone(),
-      placement: self.placement.clone(),
-      fingerprint: self.fingerprint,
-      erase: self.erase.clone(),
-    }
-  }
-}
-
 impl RenderedImage {
   fn size(&self) -> u64 {
     match self {
       Self::Symbols { size, .. } => *size,
-      Self::Protocol(image) => {
-        image.data.len() as u64
-          + image.refresh.as_ref().map_or(0, |value| value.len() as u64)
-          + image.erase.as_ref().map_or(0, |value| value.len() as u64)
-      }
+      Self::Protocol(image) => image.payload_len() as u64,
     }
   }
 }

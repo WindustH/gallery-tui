@@ -8,15 +8,18 @@ use std::{
 };
 
 use ansi_to_tui::IntoText;
-use img_tui::{NativeImageConfig, ProtocolPlacement, RenderMode, native_image};
+use img_tui::{
+  EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
+  native_image,
+};
 use ratatui::widgets::Paragraph;
 use tokio::fs;
 use tracing::{debug, warn};
 
 use super::{
-  ProtocolImage, RenderedImage,
+  RenderedImage,
   cache_file::{CacheHeader, RenderedBytes, decode_cache_file, encode_cache_file},
-  keys::{kitty_image_id, render_cache_key, render_fingerprint},
+  keys::{kitty_image_id, render_cache_key},
   lru::LruCache,
 };
 use crate::{cache, config::RenderConfig, fs_atomic};
@@ -325,57 +328,11 @@ impl<'a> ModeJob<'a> {
       ),
     };
     let prepared = prepared.as_ref().map_err(Clone::clone)?;
-    let native_config = &ctx.native_config;
-    let image_id = header.image_id.unwrap_or(1);
-
-    if header.mode == RenderMode::Kitty && native_config.kitty_unicode_placeholders {
-      let upload = native_image::render_prepared_kitty_upload(prepared, native_config, image_id)
-        .await
-        .map_err(|err| err.to_string())?;
-      let virtual_placement = native_image::render_kitty_virtual_placement(
-        native_config,
-        image_id,
-        header.width,
-        header.height,
-      );
-      let mut data = upload.data;
-      data.extend_from_slice(&virtual_placement);
-      return Ok(RenderedBytes {
-        data,
-        refresh: Some(virtual_placement),
-      });
-    }
-    if header.mode == RenderMode::Kitty
-      && let Some(placement_id) = header.placement_id
-    {
-      let viewport = native_image::NativeImageViewport {
-        full_width_cells: header.width,
-        full_height_cells: header.height,
-        visible_width_cells: header.width,
-        visible_height_cells: header.height,
-        left_cells: 0,
-        top_cells: 0,
-      };
-      let upload = native_image::render_prepared_kitty_upload(prepared, native_config, image_id)
-        .await
-        .map_err(|err| err.to_string())?;
-      let refresh = native_image::render_kitty_viewport_from_upload(
-        &upload,
-        viewport,
-        native_config,
-        placement_id,
-      )
-      .map_err(|err| err.to_string())?;
-      return Ok(RenderedBytes {
-        data: upload.data,
-        refresh: Some(refresh),
-      });
-    }
-    native_image::render_prepared(prepared, header.mode, native_config, header.image_id)
+    native_image::encode_protocol(prepared, &protocol_spec(header), &ctx.native_config)
       .await
-      .map(|data| RenderedBytes {
-        data,
-        refresh: None,
+      .map(|encoded| RenderedBytes {
+        data: encoded.data,
+        refresh: encoded.refresh,
       })
       .map_err(|err| err.to_string())
   }
@@ -482,39 +439,22 @@ fn decode_rendered(
     });
   }
 
-  let fingerprint = render_fingerprint(&bytes.data);
-  let data = String::from_utf8(bytes.data).map_err(|err| err.to_string())?;
-  let refresh = bytes
-    .refresh
-    .map(String::from_utf8)
-    .transpose()
-    .map_err(|err| err.to_string())?;
-  let passthrough = native_config.passthrough.as_deref();
-  let (placement, erase) = match (mode, header.image_id, header.placement_id) {
-    (RenderMode::Kitty, Some(image_id), Some(placement_id)) => (
-      Some(ProtocolPlacement::KittyPlacement {
-        image_id,
-        placement_id,
-      }),
-      native_image::erase_kitty_placement_sequence(passthrough, image_id, placement_id),
-    ),
-    (RenderMode::Kitty, Some(image_id), None) if native_config.kitty_unicode_placeholders => (
-      Some(ProtocolPlacement::KittyUnicode { image_id }),
-      native_image::erase_sequence(mode, passthrough, Some(image_id)),
-    ),
-    (_, image_id, _) => (
-      None,
-      native_image::erase_sequence(mode, passthrough, image_id),
-    ),
+  let encoded = EncodedProtocolImage {
+    data: bytes.data,
+    refresh: bytes.refresh,
   };
-  Ok(RenderedImage::Protocol(ProtocolImage {
-    mode,
-    data,
-    refresh,
-    placement,
-    fingerprint,
-    erase,
-  }))
+  ProtocolImage::from_encoded(encoded, &protocol_spec(header), native_config)
+    .map(RenderedImage::Protocol)
+    .map_err(|err| err.to_string())
+}
+
+/// How a protocol render described by `header` is encoded and read back.
+fn protocol_spec(header: &CacheHeader) -> ProtocolImageSpec {
+  ProtocolImageSpec {
+    image_id: header.image_id,
+    placement_id: header.placement_id,
+    ..ProtocolImageSpec::new(header.mode, header.width, header.height)
+  }
 }
 
 #[cfg(test)]

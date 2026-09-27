@@ -108,8 +108,3 @@ pub(super) fn kitty_image_id(
   let digest = hasher.finalize();
   Some(native_image::kitty_image_id(&digest))
 }
-
-pub(super) fn render_fingerprint(bytes: &[u8]) -> u64 {
-  let digest = Sha256::digest(bytes);
-  u64::from_le_bytes(digest[..8].try_into().unwrap_or_default())
-}

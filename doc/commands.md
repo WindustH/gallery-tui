@@ -67,6 +67,7 @@ Switches to a layout preset and saves the choice, with its arguments, to
 `config.toml` so it is used at the next start.
 
 ```text
+:layout slides 1 3
 :layout grid 3 3
 :layout grid 3x3
 :layout list 12
@@ -76,6 +77,8 @@ Switches to a layout preset and saves the choice, with its arguments, to
 
 The default presets take these arguments:
 
+- `slides <left_ratio> <right_ratio>`: thumbnails on the left and a large preview
+  on the right, with positive integer width weights (default `1 3`).
 - `grid <columns> <rows>`: a fixed grid whose cards fill the screen. `3x3` is
   shorthand for `3 3`.
 - `list <items>`: one column showing the given number of items per screen.

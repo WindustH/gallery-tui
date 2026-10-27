@@ -162,6 +162,12 @@ impl App {
     let top = card.y;
     let bottom = card.y.saturating_add(u32::from(card.height));
     let viewport_height = u32::from(self.browser_view_height.max(1));
+    if self.settings.config.layout.effective().strategy == "slides" {
+      self.browser_scroll = top
+        .saturating_sub(viewport_height.saturating_sub(u32::from(card.height)) / 2)
+        .min(layout.total_height.saturating_sub(viewport_height));
+      return;
+    }
     let visible_bottom = self.browser_scroll.saturating_add(viewport_height);
     if u32::from(card.height) >= viewport_height {
       if bottom <= self.browser_scroll || top >= visible_bottom {

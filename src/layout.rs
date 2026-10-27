@@ -27,8 +27,50 @@ pub fn compute_browser_layout(
   items: &[ImageItem],
   area: Rect,
   config: &EffectiveLayoutConfig,
+  cell_pixels: Option<(u16, u16)>,
 ) -> BrowserLayout {
   match config.strategy.as_str() {
+    "slides" => {
+      let (cw, ch) = cell_pixels.unwrap_or((8, 16));
+      let inset = config.padding.saturating_add(u16::from(config.show_border));
+      let image_width = area.width.saturating_sub(inset.saturating_mul(2));
+      let label = if config.show_filename && config.card_style != "image_only" {
+        config.label_lines.max(1)
+      } else {
+        0
+      };
+      let mut y = 0_u32;
+      let cards = items
+        .iter()
+        .map(|item| {
+          let (w, h) = item.dimensions.unwrap_or((1, 1));
+          let image_height = (f64::from(image_width) * f64::from(cw.max(1)) * f64::from(h)
+            / f64::from(w.max(1))
+            / f64::from(ch.max(1)))
+          .ceil() as u16;
+          let height = image_height
+            .saturating_add(inset.saturating_mul(2))
+            .saturating_add(label)
+            .max(1)
+            .min(area.height.max(1));
+          let card = CanvasRect {
+            x: 0,
+            y,
+            width: area.width,
+            height,
+          };
+          y = y
+            .saturating_add(u32::from(height))
+            .saturating_add(u32::from(config.gap_y));
+          card
+        })
+        .collect();
+      BrowserLayout {
+        cards,
+        total_height: y.saturating_sub(u32::from(config.gap_y)),
+        columns: 1,
+      }
+    }
     "masonry" => masonry_layout(items, area.width, config),
     "list" => list_layout(items.len(), area.width, area.height, config),
     _ => fixed_grid_layout(items.len(), area.width, area.height, config),
@@ -214,4 +256,56 @@ fn centered_offset(total: u16, count: usize, item: u16, gap: u16) -> u16 {
     .saturating_mul(item)
     .saturating_add(gap.saturating_mul(count.saturating_sub(1) as u16));
   total.saturating_sub(used) / 2
+}
+
+#[cfg(test)]
+mod slides_tests {
+  use super::*;
+  use crate::config::LayoutConfig;
+
+  #[test]
+  fn slides_thumbnails_form_one_scrollable_column() {
+    let config = LayoutConfig::default()
+      .set_active_from_args("slides", &[])
+      .unwrap();
+    let item = ImageItem {
+      path: "test.png".into(),
+      file_name: "test.png".into(),
+      extension: "png".into(),
+      size_bytes: 0,
+      modified: None,
+      created: None,
+      dimensions: Some((1, 10000)),
+      metadata: Vec::new(),
+    };
+    let mut landscape = item.clone();
+    landscape.dimensions = Some((1600, 900));
+    let landscape_layout = compute_browser_layout(
+      &vec![landscape; 20],
+      Rect::new(0, 0, 60, 40),
+      &config,
+      Some((8, 20)),
+    );
+    assert!(landscape_layout.cards[1].y + u32::from(landscape_layout.cards[1].height) <= 40);
+    assert_eq!(landscape_layout.cards[0].height, 15);
+    let items = vec![item; 20];
+    for area in [Rect::new(0, 0, 30, 40), Rect::new(0, 0, 1, 1)] {
+      let layout = compute_browser_layout(&items, area, &config, None);
+      assert_eq!(layout.columns, 1);
+      assert_eq!(layout.cards.len(), 20);
+      assert!(layout.total_height > u32::from(area.height));
+      assert!(
+        layout
+          .cards
+          .iter()
+          .all(|card| card.height <= area.height && card.width <= area.width)
+      );
+      assert!(layout.cards.windows(2).all(|cards| cards[0].y < cards[1].y));
+    }
+    assert!(
+      compute_browser_layout(&[], Rect::default(), &config, None)
+        .cards
+        .is_empty()
+    );
+  }
 }

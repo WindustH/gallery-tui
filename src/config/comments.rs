@@ -127,10 +127,16 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
     "layout.padding" => Some("Default inner padding for image cards."),
     "layout.presets.*" => Some("Named layout preset used by the :layout command."),
     "layout.presets.*.strategy" => {
-      Some("Layout algorithm used by this preset: grid, list, or masonry.")
+      Some("Layout algorithm used by this preset: grid, list, masonry, or slides.")
     }
     "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
     "layout.presets.*.columns" => Some("Default column count for grid and masonry layouts."),
+    "layout.presets.*.left_ratio" => {
+      Some("Left thumbnail panel width weight for slides (positive integer).")
+    }
+    "layout.presets.*.right_ratio" => {
+      Some("Right preview panel width weight for slides (positive integer).")
+    }
     "layout.presets.*.rows" => Some("Default row count for fixed grid layouts."),
     "layout.presets.*.items" => Some("Default item count for list layouts."),
     "layout.presets.*.card_width" => Some("Card width in cells for masonry layouts."),

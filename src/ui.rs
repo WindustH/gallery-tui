@@ -94,7 +94,22 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
   fill_background(frame, &app.settings.theme, area);
 
   let layout_config = app.settings.config.layout.effective();
-  let layout = compute_browser_layout(&app.images, area, &layout_config);
+  let (area, preview) = if layout_config.strategy == "slides" {
+    let total = u32::from(layout_config.left_ratio) + u32::from(layout_config.right_ratio);
+    let gap = layout_config.gap_x.max(1).min(area.width);
+    let available = Rect::new(area.x, area.y, area.width.saturating_sub(gap), area.height);
+    let split = Layout::horizontal([
+      Constraint::Ratio(u32::from(layout_config.left_ratio), total),
+      Constraint::Ratio(u32::from(layout_config.right_ratio), total),
+    ])
+    .split(available);
+    let mut preview = split[1];
+    preview.x = preview.x.saturating_add(gap);
+    (split[0], Some(preview))
+  } else {
+    (area, None)
+  };
+  let layout = compute_browser_layout(&app.images, area, &layout_config, app.terminal_cell_pixels);
   let layout_changed = app.update_browser_layout(layout, area);
   let app = &*app;
   let Some(layout) = app.browser_layout() else {
@@ -128,6 +143,18 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
   if layout_changed {
     images.preserve_overlays = false;
     images.preserve_areas.clear();
+  }
+  if let Some(preview) = preview
+    && let Some(item) = app.current()
+  {
+    images.draw(
+      frame,
+      item,
+      preview,
+      ImageAlignment::Center,
+      (app.focused, app.images.len()),
+    );
+    preload_detail_neighbors(app, images, preview);
   }
   preload_browser_neighbors(app, images, layout, &layout_config);
 }

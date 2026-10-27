@@ -8,6 +8,7 @@ keys do nothing in detail view and the other way round.
 
 | Key | Action |
 | --- | --- |
+| `, p` | Switch to `slides 1 5` and save it to `config.toml` |
 | `h` `j` `k` `l`, arrow keys | Move focus |
 | `pgup`, `pgdn` | Move focus by one screen of cards |
 | `home` or `g g` | First image |

@@ -20,6 +20,11 @@ impl Default for KeymapConfig {
     Self {
       browser: KeymapSection {
         keymap: vec![
+          key(
+            [",", "p"],
+            "layout slides 1 5",
+            "Use slides layout with 1:5 panels",
+          ),
           key("q", "quit", "Quit gallery-tui"),
           key("ctrl-c", "quit", "Quit gallery-tui"),
           key("enter", "open", "Open detail page"),

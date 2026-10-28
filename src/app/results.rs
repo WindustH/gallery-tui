@@ -15,6 +15,7 @@ impl App {
       Ok(mut images) => {
         sort_images(&mut images, &outcome.sort);
         self.images = images;
+        self.invalidate_layout();
         self.metadata_fields = None;
         self.sort_spec = outcome.sort;
         self.restore_focus(outcome.preserve_focus.as_deref());
@@ -48,12 +49,22 @@ impl App {
 
   /// Update the image list and selection after `from` was renamed to `to`.
   fn apply_rename(&mut self, from: &Path, to: &Path) {
+    let focused = self.current().map(|item| {
+      if item.path == from {
+        to.to_owned()
+      } else {
+        item.path.clone()
+      }
+    });
     if let Some(item) = self.images.iter_mut().find(|item| item.path == from) {
       item.set_path(to.to_path_buf());
     }
     if self.selected.remove(from) {
       self.selected.insert(to.to_path_buf());
     }
+    sort_images(&mut self.images, &self.sort_spec);
+    self.invalidate_layout();
+    self.restore_focus(focused.as_deref());
   }
 
   pub fn finish_cache_clear(&mut self, outcome: CacheClearOutcome) {
@@ -102,14 +113,18 @@ impl App {
       &outcome.from
     };
     match outcome.result {
-      Ok(metadata) => {
+      Ok(refreshed) => {
         if let Some(item) = self
           .images
           .iter_mut()
           .find(|item| item.path == *current_path)
         {
-          item.metadata = metadata;
+          *item = refreshed;
         }
+        let focused = self.current().map(|item| item.path.clone());
+        sort_images(&mut self.images, &self.sort_spec);
+        self.invalidate_layout();
+        self.restore_focus(focused.as_deref());
         self.metadata_fields = None;
         if outcome.edit.file_name.is_some() && outcome.edit.tags.is_empty() {
           self.set_message(format!("renamed to {}", file_label(&outcome.to)));

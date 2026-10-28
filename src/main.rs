@@ -74,12 +74,14 @@ async fn main() -> Result<()> {
     &[
       NamespaceSpec::new("", "render", false).with_extension("ansi"),
       NamespaceSpec::new("svg", "svg", true),
+      NamespaceSpec::new("slices", "slices", true),
     ],
     settings.config.render.disk_cache_max_bytes,
   )?;
   discard_legacy_cache(&settings.cache_dir)?;
   let log_path = logging::init(&settings.cache_dir)?;
-  let temp_dir = gallery_temp_dir();
+  let temp_guard = gallery_temp_dir()?;
+  let temp_dir = temp_guard.path().to_owned();
   tracing::info!(
     cache_dir = %settings.cache_dir.display(),
     temp_dir = %temp_dir.display(),
@@ -129,13 +131,17 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new(None)?;
   // Redraw only after something happened: every state change, render result,
   // and resize arrives as an event.
+  let mut needs_draw = true;
   loop {
-    tui.draw(|frame| ui::draw(frame, &mut app, &mut renderer, &tx))?;
+    if needs_draw {
+      tui.draw(|frame| ui::draw(frame, &mut app, &mut renderer, &tx))?;
+    }
     if app.should_quit() {
       break;
     }
     if let Some(request) = app.take_editor_request() {
       run_editor(&mut tui, &mut app, request, &input, &temp_dir)?;
+      needs_draw = true;
       continue;
     }
     let Some(message) = rx.recv().await else {
@@ -143,7 +149,8 @@ async fn main() -> Result<()> {
     };
     let effect = handle_async_event(message, &mut app, &mut renderer, &tx, &input);
     let frame_sync_navigation = app.settings.config.behavior.frame_sync_navigation;
-    drain_queued_events(
+    needs_draw = effect != InputEffect::None;
+    needs_draw |= drain_queued_events(
       &mut rx,
       &mut app,
       &mut renderer,
@@ -255,21 +262,14 @@ fn write_paths(out: &mut impl Write, paths: &[PathBuf]) -> io::Result<()> {
   Ok(())
 }
 
-fn gallery_temp_dir() -> PathBuf {
-  env::var_os("GALLERY_TUI_TMPDIR")
-    .filter(|value| !value.is_empty())
-    .map(PathBuf::from)
-    .unwrap_or_else(default_gallery_temp_dir)
-}
-
-fn default_gallery_temp_dir() -> PathBuf {
-  #[cfg(unix)]
-  {
-    PathBuf::from("/tmp/gallery-tui")
-  }
-  #[cfg(not(unix))]
-  {
-    env::temp_dir().join("gallery-tui")
+fn gallery_temp_dir() -> Result<tempfile::TempDir> {
+  let mut builder = tempfile::Builder::new();
+  builder.prefix("gallery-tui-");
+  if let Some(parent) = env::var_os("GALLERY_TUI_TMPDIR").filter(|value| !value.is_empty()) {
+    std::fs::create_dir_all(&parent)?;
+    Ok(builder.tempdir_in(parent)?)
+  } else {
+    Ok(builder.tempdir()?)
   }
 }
 
@@ -289,10 +289,16 @@ fn handle_async_event(
       }
     }
     AsyncEvent::Render(outcome) => {
-      if let Some(error) = renderer.finish(outcome) {
+      let (needs_draw, message) = renderer.finish(outcome);
+      if let Some(error) = message {
         app.set_message(error);
       }
-      InputEffect::Other
+      if needs_draw {
+        InputEffect::Other
+      } else {
+        ui::pump_preload(app, renderer, tx);
+        InputEffect::None
+      }
     }
     AsyncEvent::Scan(outcome) => {
       renderer.forget_failures();
@@ -331,7 +337,8 @@ fn drain_queued_events(
   input: &InputReader,
   discard_browse_inputs: bool,
   frame_sync_navigation: bool,
-) {
+) -> bool {
+  let mut needs_draw = false;
   let mut discard_browse_inputs = discard_browse_inputs;
   for _ in 0..MAX_QUEUED_EVENTS_PER_TICK {
     if app.should_quit() || app.editor_request_pending() {
@@ -344,10 +351,12 @@ fn drain_queued_events(
       continue;
     }
     let effect = handle_async_event(message, app, renderer, tx, input);
+    needs_draw |= effect != InputEffect::None;
     if frame_sync_navigation && effect == InputEffect::BrowseStep {
       discard_browse_inputs = true;
     }
   }
+  needs_draw
 }
 
 fn queued_message_is_frame_sync_deferred_input(

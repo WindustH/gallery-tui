@@ -54,7 +54,7 @@ pub(super) fn render_cache_key(
 }
 
 fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
-  hasher.update(b"render-v7");
+  hasher.update(b"render-v9");
   hasher.update([0]);
   hasher.update(config.chafa_bin.as_bytes());
   hasher.update([0]);

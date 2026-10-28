@@ -14,6 +14,8 @@ use crate::{
 };
 
 mod commands;
+mod composition;
+pub(crate) use composition::BrowserPanel;
 mod editor;
 mod input;
 mod navigation;
@@ -48,7 +50,15 @@ pub enum ConfirmDialog {
   MetadataWrite { path: PathBuf, edit: MetadataEdit },
 }
 
+#[derive(PartialEq)]
+struct BrowserLayoutKey {
+  area: Rect,
+  config: crate::config::EffectiveLayoutConfig,
+  cell_pixels: Option<(u16, u16)>,
+}
+
 pub struct App {
+  pub(crate) overlay_areas: Vec<Rect>,
   root: PathBuf,
   pub settings: Settings,
   keymap: KeyBindings,
@@ -57,8 +67,13 @@ pub struct App {
   pub selected: BTreeSet<PathBuf>,
   pub view: ViewMode,
   pub detail_page: DetailPage,
+  pub(crate) metadata_scroll: u16,
+  pub(crate) metadata_max_scroll: u16,
+  pub(crate) metadata_view_height: u16,
   pub browser_scroll: u32,
   last_layout: Option<BrowserLayout>,
+  layout_key: Option<BrowserLayoutKey>,
+  pub(crate) follower: Option<BrowserPanel>,
   browser_viewport: Option<Rect>,
   browser_view_height: u16,
   pub prompt: Option<Prompt>,
@@ -85,6 +100,7 @@ impl App {
     let sort_spec = settings.config.initial_sort_spec();
     let keymap = settings.keymap.bindings();
     Self {
+      overlay_areas: Vec::new(),
       root,
       settings,
       keymap,
@@ -93,8 +109,13 @@ impl App {
       selected: BTreeSet::new(),
       view: ViewMode::Browser,
       detail_page: DetailPage::Image,
+      metadata_scroll: 0,
+      metadata_max_scroll: 0,
+      metadata_view_height: 1,
       browser_scroll: 0,
       last_layout: None,
+      layout_key: None,
+      follower: None,
       browser_viewport: None,
       browser_view_height: 1,
       prompt: None,
@@ -199,6 +220,30 @@ impl App {
     self.editor_request.is_some()
   }
 
+  pub(super) fn invalidate_layout(&mut self) {
+    self.layout_key = None;
+    self.follower = None;
+  }
+  pub fn prepare_browser_layout(
+    &mut self,
+    config: &crate::config::EffectiveLayoutConfig,
+    area: Rect,
+  ) -> bool {
+    let key = BrowserLayoutKey {
+      area,
+      config: config.clone(),
+      cell_pixels: self.terminal_cell_pixels,
+    };
+    if self.layout_key.as_ref() == Some(&key) {
+      return false;
+    }
+    let layout =
+      crate::layout::compute_browser_layout(&self.images, area, config, self.terminal_cell_pixels);
+    self.layout_key = Some(key);
+    self.update_browser_layout(layout, area);
+    true
+  }
+
   /// Store the layout computed for this frame and keep the focused card
   /// visible. Returns whether the layout or viewport changed.
   pub fn update_browser_layout(&mut self, layout: BrowserLayout, viewport: Rect) -> bool {
@@ -218,6 +263,10 @@ impl App {
       self.ensure_focus_visible();
     }
     changed
+  }
+
+  pub fn browser_viewport(&self) -> Option<Rect> {
+    self.browser_viewport
   }
 
   pub fn browser_layout(&self) -> Option<&BrowserLayout> {

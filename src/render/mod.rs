@@ -10,7 +10,7 @@ mod keys;
 mod pipeline;
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   path::PathBuf,
   sync::{
     Arc,
@@ -18,7 +18,7 @@ use std::{
   },
 };
 
-use img_tui::{NativeImageConfig, ProtocolImage, RenderMode};
+use img_tui::{NativeImageConfig, NativeImageViewport, ProtocolImage, RenderMode};
 use ratatui::widgets::Paragraph;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
@@ -57,9 +57,21 @@ pub struct RenderKey {
   modified: u128,
   width: u16,
   height: u16,
+  viewport: Option<NativeImageViewport>,
 }
 
 impl RenderKey {
+  fn for_viewport(item: &ImageItem, viewport: NativeImageViewport) -> Self {
+    let mut key = Self::new(item, viewport.full_width_cells, viewport.full_height_cells);
+    if viewport.left_cells != 0
+      || viewport.top_cells != 0
+      || viewport.visible_width_cells != key.width
+      || viewport.visible_height_cells != key.height
+    {
+      key.viewport = Some(viewport);
+    }
+    key
+  }
   fn new(item: &ImageItem, width: u16, height: u16) -> Self {
     Self {
       path: item.path.clone(),
@@ -67,12 +79,14 @@ impl RenderKey {
       modified: item.modified_key(),
       width,
       height,
+      viewport: None,
     }
   }
 }
 
 #[derive(Debug)]
 pub struct RenderOutcome {
+  preload: bool,
   key: RenderKey,
   result: Result<RenderedImage, RenderFailure>,
 }
@@ -105,6 +119,8 @@ pub struct RenderStore {
   memory: LruCache<RenderKey, RenderedImage>,
   current: Option<Arc<RenderedImage>>,
   failures: HashMap<RenderKey, String>,
+  preload_failures: HashMap<RenderKey, std::time::Instant>,
+  visible_waits: HashSet<RenderKey>,
   /// Jobs in progress, with the last frame that asked for each.
   in_flight: HashMap<RenderKey, Arc<AtomicU64>>,
   frame: Arc<AtomicU64>,
@@ -121,8 +137,20 @@ impl RenderStore {
     modes: Vec<RenderMode>,
   ) -> Self {
     let max_concurrent = config.max_concurrent.max(1);
-    let memory = LruCache::new(config.raw_memory_cache_max_bytes);
-    let compressed_memory = LruCache::new(config.compressed_memory_cache_max_bytes);
+    // Share the raw-memory budget between terminal renders and reusable decoded images.
+    let raw_budget = config.raw_memory_cache_max_bytes;
+    let prepared_budget = if raw_budget == 0 {
+      0
+    } else {
+      (raw_budget / 2).max(1)
+    };
+    let memory = LruCache::new(if raw_budget == 0 {
+      0
+    } else {
+      raw_budget.saturating_sub(prepared_budget).max(1)
+    });
+    let compressed_memory = Arc::new(LruCache::new(config.compressed_memory_cache_max_bytes));
+    let cache_writer = pipeline::cache_writer(&config, compressed_memory.clone());
     Self {
       context: Arc::new(RenderContext {
         cache_dir,
@@ -130,11 +158,15 @@ impl RenderStore {
         native_config,
         modes,
         compressed_memory,
+        cache_writer,
+        prepared: img_tui::slicing::PreparedImageCache::new(prepared_budget),
         session_nonce: keys::render_session_nonce(),
       }),
       memory,
       current: None,
       failures: HashMap::new(),
+      preload_failures: HashMap::new(),
+      visible_waits: HashSet::new(),
       in_flight: HashMap::new(),
       frame: Arc::new(AtomicU64::new(0)),
       max_concurrent,
@@ -149,19 +181,19 @@ impl RenderStore {
     self.frame.fetch_add(1, Ordering::Relaxed);
   }
 
-  /// Look up the render of `item` at `width` x `height`, starting a job when
-  /// it is neither cached, failed, nor already in progress.
-  pub fn request<E: From<RenderOutcome> + Send + 'static>(
+  /// Request a visible slice at the full image scale, starting a job on a cache miss.
+  pub fn request_viewport<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     item: &ImageItem,
-    width: u16,
-    height: u16,
+    viewport: NativeImageViewport,
     tx: &mpsc::UnboundedSender<E>,
   ) -> RenderState<'_> {
+    let width = viewport.full_width_cells;
+    let height = viewport.full_height_cells;
     if width == 0 || height == 0 {
       return RenderState::Pending;
     }
-    let key = RenderKey::new(item, width, height);
+    let key = RenderKey::for_viewport(item, viewport);
     self.current = self.memory.get(&key);
     if self.current.is_some() {
       return RenderState::Ready(self.current.as_deref().unwrap());
@@ -174,6 +206,8 @@ impl RenderStore {
     }
     if !self.mark_in_flight(&key) {
       self.spawn(key, tx, None);
+    } else {
+      self.visible_waits.insert(key);
     }
     RenderState::Pending
   }
@@ -187,10 +221,38 @@ impl RenderStore {
     height: u16,
     tx: &mpsc::UnboundedSender<E>,
   ) {
+    self.preload_viewport(
+      item,
+      NativeImageViewport {
+        full_width_cells: width,
+        full_height_cells: height,
+        visible_width_cells: width,
+        visible_height_cells: height,
+        left_cells: 0,
+        top_cells: 0,
+      },
+      tx,
+    );
+  }
+
+  pub fn preload_viewport<E: From<RenderOutcome> + Send + 'static>(
+    &mut self,
+    item: &ImageItem,
+    viewport: NativeImageViewport,
+    tx: &mpsc::UnboundedSender<E>,
+  ) {
+    let width = viewport.visible_width_cells;
+    let height = viewport.visible_height_cells;
     if width == 0 || height == 0 {
       return;
     }
-    let key = RenderKey::new(item, width, height);
+    let key = RenderKey::for_viewport(item, viewport);
+    self
+      .preload_failures
+      .retain(|_, failed| failed.elapsed().as_secs() < 5);
+    if self.preload_failures.contains_key(&key) {
+      return;
+    }
     if self.memory.touch(&key) || self.failures.contains_key(&key) || self.mark_in_flight(&key) {
       return;
     }
@@ -207,20 +269,28 @@ impl RenderStore {
   }
 
   /// Apply a finished job. Returns a status message for failures.
-  pub fn finish(&mut self, outcome: RenderOutcome) -> Option<String> {
+  pub fn finish(&mut self, outcome: RenderOutcome) -> (bool, Option<String>) {
+    let waiting = self.visible_waits.remove(&outcome.key);
+    let visible = !outcome.preload || waiting;
     self.in_flight.remove(&outcome.key);
     match outcome.result {
       Ok(image) => {
         self.failures.remove(&outcome.key);
         let size = image.size();
         self.memory.insert(outcome.key, image, size);
-        None
+        (visible, None)
       }
-      Err(RenderFailure::Cancelled) => None,
+      Err(RenderFailure::Cancelled) => (visible, None),
+      Err(RenderFailure::Error(_)) if outcome.preload => {
+        self
+          .preload_failures
+          .insert(outcome.key, std::time::Instant::now());
+        (visible, None)
+      }
       Err(RenderFailure::Error(error)) => {
         let message = format!("render failed: {error}");
         self.failures.insert(outcome.key, error);
-        Some(message)
+        (true, Some(message))
       }
     }
   }
@@ -229,6 +299,7 @@ impl RenderStore {
     self.current = None;
     self.memory.clear();
     self.context.clear_compressed_memory();
+    self.context.prepared.clear();
     self.forget_failures();
   }
 
@@ -236,6 +307,13 @@ impl RenderStore {
   /// file or tool is back.
   pub fn forget_failures(&mut self) {
     self.failures.clear();
+    self.preload_failures.clear();
+  }
+
+  pub fn has_preload_capacity(&self) -> bool {
+    self.in_flight.len() < self.max_concurrent
+      && self.preload_semaphore.available_permits() > 0
+      && self.semaphore.available_permits() > 0
   }
 
   fn try_preload_permits(&self) -> Option<RenderPermits> {
@@ -263,6 +341,7 @@ impl RenderStore {
     tx: &mpsc::UnboundedSender<E>,
     permits: Option<RenderPermits>,
   ) {
+    let preload = permits.is_some();
     let requested = Arc::new(AtomicU64::new(self.frame.load(Ordering::Relaxed)));
     self.in_flight.insert(key.clone(), requested.clone());
 
@@ -289,7 +368,7 @@ impl RenderStore {
             return Err(RenderFailure::Cancelled);
           }
           context
-            .render(&key.path, key.width, key.height)
+            .render(&key.path, key.width, key.height, key.viewport)
             .await
             .map_err(RenderFailure::Error)
         }
@@ -300,7 +379,11 @@ impl RenderStore {
         Ok(result) => result,
         Err(error) => Err(RenderFailure::Error(format!("render task failed: {error}"))),
       };
-      let _ = tx.send(E::from(RenderOutcome { key, result }));
+      let _ = tx.send(E::from(RenderOutcome {
+        key,
+        result,
+        preload,
+      }));
     });
   }
 }

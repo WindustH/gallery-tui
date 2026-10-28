@@ -15,7 +15,7 @@ use crate::{
   app::{App, DetailPage, ViewMode},
   config::{EffectiveLayoutConfig, ThemeConfig},
   event::AsyncEvent,
-  layout::{BrowserLayout, compute_browser_layout, screen_rect},
+  layout::{BrowserLayout, screen_rect},
   model::ImageItem,
   render::RenderStore,
   terminal::FrameOutput,
@@ -35,16 +35,18 @@ pub fn draw(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
 ) -> FrameOutput {
+  renderer.begin_frame();
   let mut images = FrameImages::new(renderer, tx, app.terminal_cell_pixels);
   let mut cursor_position = None;
   let area = frame.area();
   let footer_height = footer_height(app, area.width).min(area.height);
-  let chunks = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
-    .split(area);
-  let main = chunks[0];
-  let footer = chunks[1];
+  let main = area;
+  let footer = Rect::new(
+    area.x,
+    area.bottom().saturating_sub(footer_height),
+    area.width,
+    footer_height,
+  );
   let completion_area = completion_overlay_area(app, area, footer);
 
   match app.view {
@@ -55,7 +57,7 @@ pub fn draw(
   // Modal rects replace kitty U=1 placeholder cells. Uncovered cells keep
   // displaying the image, and the regular text diff restores placeholders
   // when a modal closes.
-  let mut occluders = Vec::new();
+  let mut occluders = vec![footer];
   if let Some(completion_area) = completion_area {
     draw_command_completion(frame, app, completion_area);
     occluders.push(completion_area);
@@ -75,6 +77,7 @@ pub fn draw(
   if images.preserve_overlays {
     output.preserve_areas = images.preserve_areas;
   }
+  app.overlay_areas.clone_from(&occluders);
   output.occluders = occluders;
   output
 }
@@ -94,28 +97,106 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
   fill_background(frame, &app.settings.theme, area);
 
   let layout_config = app.settings.config.layout.effective();
-  let (area, preview) = if layout_config.strategy == "slides" {
-    let total = u32::from(layout_config.left_ratio) + u32::from(layout_config.right_ratio);
-    let gap = layout_config.gap_x.max(1).min(area.width);
-    let available = Rect::new(area.x, area.y, area.width.saturating_sub(gap), area.height);
-    let split = Layout::horizontal([
-      Constraint::Ratio(u32::from(layout_config.left_ratio), total),
-      Constraint::Ratio(u32::from(layout_config.right_ratio), total),
-    ])
-    .split(available);
-    let mut preview = split[1];
-    preview.x = preview.x.saturating_add(gap);
-    (split[0], Some(preview))
+  let composition = layout_config.composition.clone();
+  let primary_area = composition
+    .as_ref()
+    .map_or(area, |c| c.split.areas(area)[c.split.primary.index()]);
+  let layout_changed = app.prepare_browser_layout(&layout_config, primary_area);
+  if layout_changed {
+    images.preserve_overlays = false;
+    images.preserve_areas.clear();
+  }
+  if let Some(layout) = app.browser_layout() {
+    draw_browser_panel(
+      frame,
+      app,
+      images,
+      BrowserPanelView {
+        layout,
+        config: &layout_config,
+        area: primary_area,
+        scroll: app.browser_scroll,
+        following: false,
+      },
+    );
+  }
+  if let Some(composition) = composition {
+    let secondary = 1 - composition.split.primary.index();
+    app.prepare_follower(
+      composition.panels[secondary].clone(),
+      composition.split.areas(area)[secondary],
+    );
+    if let Some(panel) = &app.follower {
+      draw_browser_panel(
+        frame,
+        app,
+        images,
+        BrowserPanelView {
+          layout: &panel.layout,
+          config: &panel.config,
+          area: panel.area,
+          scroll: panel.scroll,
+          following: true,
+        },
+      );
+    }
   } else {
-    (area, None)
-  };
-  let layout = compute_browser_layout(&app.images, area, &layout_config, app.terminal_cell_pixels);
-  let layout_changed = app.update_browser_layout(layout, area);
-  let app = &*app;
-  let Some(layout) = app.browser_layout() else {
-    return;
-  };
+    app.follower = None;
+  }
+  // Both panes enqueue their visible images before speculative work starts.
+  if let Some(layout) = app.browser_layout() {
+    preload_browser_neighbors(
+      app,
+      images,
+      BrowserPanelView {
+        layout,
+        config: &layout_config,
+        area: primary_area,
+        scroll: app.browser_scroll,
+        following: false,
+      },
+    );
+  }
+  if let Some(panel) = &app.follower {
+    preload_browser_neighbors(
+      app,
+      images,
+      BrowserPanelView {
+        layout: &panel.layout,
+        config: &panel.config,
+        area: panel.area,
+        scroll: panel.scroll,
+        following: true,
+      },
+    );
+  }
+}
 
+#[derive(Clone, Copy)]
+struct BrowserPanelView<'a> {
+  layout: &'a BrowserLayout,
+  config: &'a EffectiveLayoutConfig,
+  area: Rect,
+  scroll: u32,
+  following: bool,
+}
+
+fn draw_browser_panel(
+  frame: &mut Frame,
+  app: &App,
+  images: &mut FrameImages,
+  panel: BrowserPanelView<'_>,
+) {
+  let BrowserPanelView {
+    layout,
+    config: layout_config,
+    area,
+    scroll,
+    ..
+  } = panel;
+  if area.is_empty() {
+    return;
+  }
   if app.images.is_empty() {
     let muted = app.settings.theme.color(&app.settings.theme.muted);
     frame.render_widget(
@@ -127,44 +208,35 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
     return;
   }
 
-  for (index, (item, card_canvas)) in app.images.iter().zip(&layout.cards).enumerate() {
-    let Some(card_area) = screen_rect(*card_canvas, area, app.browser_scroll) else {
+  for index in layout.visible_indices(scroll, area.height) {
+    let item = &app.images[index];
+    let card_canvas = &layout.cards[index];
+    let Some(card_area) = screen_rect(*card_canvas, area, scroll) else {
       continue;
     };
+    if layout_config.strategy != "masonry"
+      && (card_canvas.y < scroll || card_area.height != card_canvas.height)
+    {
+      continue;
+    }
     let card = CardView {
       index,
       area: card_area,
-      top_clipped: card_canvas.y < app.browser_scroll,
-      bottom_clipped: card_canvas.y.saturating_add(u32::from(card_canvas.height))
-        > app.browser_scroll.saturating_add(u32::from(area.height)),
+      full_size: Rect::new(0, 0, card_canvas.width, card_canvas.height),
+      hidden_top: scroll
+        .saturating_sub(card_canvas.y)
+        .min(u32::from(card_canvas.height)) as u16,
     };
-    draw_card(frame, app, images, item, card, &layout_config);
+    draw_card(frame, app, images, item, card, panel);
   }
-  if layout_changed {
-    images.preserve_overlays = false;
-    images.preserve_areas.clear();
-  }
-  if let Some(preview) = preview
-    && let Some(item) = app.current()
-  {
-    images.draw(
-      frame,
-      item,
-      preview,
-      ImageAlignment::Center,
-      (app.focused, app.images.len()),
-    );
-    preload_detail_neighbors(app, images, preview);
-  }
-  preload_browser_neighbors(app, images, layout, &layout_config);
 }
 
-/// A card's on-screen rect and whether the viewport cuts off its edges.
+/// Full card geometry plus its visible screen window.
 struct CardView {
   index: usize,
   area: Rect,
-  top_clipped: bool,
-  bottom_clipped: bool,
+  full_size: Rect,
+  hidden_top: u16,
 }
 
 fn draw_card(
@@ -173,39 +245,136 @@ fn draw_card(
   images: &mut FrameImages,
   item: &ImageItem,
   card: CardView,
-  layout_config: &EffectiveLayoutConfig,
+  panel: BrowserPanelView<'_>,
 ) {
+  let layout_config = panel.config;
   let theme = &app.settings.theme;
-  let focused = card.index == app.focused;
-  let selected = app.selected.contains(&item.path);
+  let plain_preview = (panel.following || layout_config.composition.is_some())
+    && layout_config.strategy == "grid"
+    && layout_config.columns == 1
+    && layout_config.rows == 1;
+  let focused = !plain_preview && card.index == app.focused;
+  let selected = !plain_preview && app.selected.contains(&item.path);
   let (foreground, background) = card_state_colors(theme, focused, selected);
   let style = Style::default().fg(foreground).bg(background);
-  if layout_config.show_border {
-    let block = Block::default()
-      .borders(Borders::ALL)
-      .border_style(style)
-      .style(style);
-    frame.render_widget(block, card.area);
-    clear_clipped_card_edges(frame, theme, &card);
-  } else {
-    frame.render_widget(Block::default().style(style), card.area);
+  // Compute content against the full card; clip only its final placement.
+  // Do not allocate a full-height cell buffer for very tall masonry images.
+  let mut borders = Borders::LEFT | Borders::RIGHT;
+  if card.hidden_top == 0 {
+    borders |= Borders::TOP;
   }
-
-  let inner = card_inner_area(card.area, layout_config);
-  if inner.width == 0 || inner.height == 0 {
-    return;
+  if card.hidden_top.saturating_add(card.area.height) == card.full_size.height {
+    borders |= Borders::BOTTOM;
+  }
+  let block = Block::default().style(style);
+  frame.render_widget(
+    if layout_config.show_border {
+      block.borders(borders).border_style(style)
+    } else {
+      block
+    },
+    card.area,
+  );
+  let window = Rect::new(0, card.hidden_top, card.area.width, card.area.height);
+  let inner = card_inner_area(card.full_size, layout_config);
+  if layout_config.show_page_numbers && inner.y > 0 {
+    let number = Rect::new(inner.x, inner.y - 1, inner.width, 1).intersection(window);
+    if !number.is_empty() {
+      frame.render_widget(
+        Paragraph::new(format!(
+          "{}{}",
+          if focused { "> " } else { "" },
+          card.index + 1
+        ))
+        .style(style),
+        Rect::new(
+          card.area.x + number.x,
+          card.area.y + number.y - card.hidden_top,
+          number.width,
+          number.height,
+        ),
+      );
+    }
   }
   let (image_area, label_area) = split_card_content(inner, layout_config);
-  if let Some(label_area) = label_area {
-    draw_label(frame, &item.file_name, label_area, style);
+  if let Some(label) = label_area {
+    let visible = label.intersection(window);
+    if !visible.is_empty() {
+      let text = if label.height <= 1 {
+        truncate_for_width(&item.file_name, label.width as usize)
+      } else {
+        wrap_for_area(&item.file_name, label.width as usize, label.height as usize)
+      };
+      frame.render_widget(
+        Paragraph::new(text)
+          .style(style)
+          .scroll((visible.y - label.y, visible.x - label.x)),
+        Rect::new(
+          card.area.x + visible.x,
+          card.area.y + visible.y - card.hidden_top,
+          visible.width,
+          visible.height,
+        ),
+      );
+    }
   }
-  images.draw(
-    frame,
-    item,
+  if layout_config.strategy != "masonry" {
+    images.draw(
+      frame,
+      item,
+      Rect::new(
+        card.area.x + image_area.x,
+        card.area.y + image_area.y,
+        image_area.width,
+        image_area.height,
+      ),
+      image_alignment_for_layout(layout_config),
+      (card.index, app.images.len()),
+    );
+    return;
+  }
+  let fitted = image::fit_image_rect(
     image_area,
+    item,
+    app.terminal_cell_pixels,
     image_alignment_for_layout(layout_config),
-    (card.index, app.images.len()),
   );
+  let visible = fitted.intersection(Rect::new(
+    0,
+    card.hidden_top,
+    card.area.width,
+    card.area.height,
+  ));
+  if !visible.is_empty() {
+    let viewport = img_tui::NativeImageViewport {
+      full_width_cells: fitted.width,
+      full_height_cells: fitted.height,
+      visible_width_cells: visible.width,
+      visible_height_cells: visible.height,
+      left_cells: u32::from(visible.x - fitted.x),
+      top_cells: u32::from(visible.y - fitted.y),
+    };
+    let limit = (panel.area.height / layout_config.scroll_divisor).max(1);
+    for slice in viewport.slices(limit) {
+      images.draw_window(
+        frame,
+        item,
+        slice
+          .screen_area(
+            viewport,
+            Rect::new(
+              card.area.x + visible.x,
+              card.area.y + visible.y - card.hidden_top,
+              visible.width,
+              visible.height,
+            ),
+          )
+          .expect("slice is inside its visible window"),
+        slice,
+        (card.index, app.images.len()),
+      );
+    }
+  }
 }
 
 fn card_state_colors(theme: &ThemeConfig, focused: bool, selected: bool) -> (Color, Color) {
@@ -239,7 +408,7 @@ fn state_colors(theme: &ThemeConfig, foreground: &str, background: &str) -> (Col
   )
 }
 
-fn draw_detail(frame: &mut Frame, app: &App, images: &mut FrameImages, area: Rect) {
+fn draw_detail(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area: Rect) {
   fill_background(frame, &app.settings.theme, area);
 
   let Some(item) = app.current() else {
@@ -268,36 +437,128 @@ fn draw_detail(frame: &mut Frame, app: &App, images: &mut FrameImages, area: Rec
       );
       images.draw(frame, item, preview, ImageAlignment::Center, position);
       preload_detail_neighbors(app, images, preview);
-      draw_metadata(frame, &app.settings.theme, item, split[1]);
+      let (scroll, max_scroll) = draw_metadata(
+        frame,
+        &app.settings.theme,
+        item,
+        split[1],
+        app.metadata_scroll,
+      );
+      app.metadata_scroll = scroll;
+      app.metadata_max_scroll = max_scroll;
+      app.metadata_view_height = split[1].height.saturating_sub(2).max(1);
     }
   }
 }
 
-fn preload_browser_neighbors(
-  app: &App,
-  images: &mut FrameImages,
-  layout: &BrowserLayout,
-  layout_config: &EffectiveLayoutConfig,
-) {
+fn preload_browser_neighbors(app: &App, images: &mut FrameImages, panel: BrowserPanelView<'_>) {
+  let BrowserPanelView {
+    layout,
+    config: layout_config,
+    area,
+    scroll,
+    ..
+  } = panel;
+  if area.is_empty() {
+    return;
+  }
+  if !images.can_preload() {
+    return;
+  }
   let render = &app.settings.config.render;
-  let start = app.focused.saturating_sub(render.preload_behind);
-  let end = app
-    .focused
-    .saturating_add(render.preload_ahead)
-    .min(app.images.len().saturating_sub(1));
   let alignment = image_alignment_for_layout(layout_config);
-  for index in start..=end {
-    let (Some(card), Some(item)) = (layout.cards.get(index), app.images.get(index)) else {
+  if layout_config.strategy != "masonry" {
+    let start = app.focused.saturating_sub(render.preload_behind);
+    let end = app
+      .focused
+      .saturating_add(render.preload_ahead)
+      .min(app.images.len().saturating_sub(1));
+    for index in start..=end {
+      let (Some(card), Some(item)) = (layout.cards.get(index), app.images.get(index)) else {
+        continue;
+      };
+      let inner = card_inner_area(Rect::new(0, 0, card.width, card.height), layout_config);
+      let (image_area, _) = split_card_content(inner, layout_config);
+      images.preload(item, image_area, alignment);
+    }
+    return;
+  }
+  // Predict the real spatial up/down path, with each step starting at the
+  // preceding step's scroll position. Masonry file indices are not row order.
+  let candidates = if panel.following {
+    app.follower_preload_scrolls()
+  } else {
+    let mut down = Some((app.focused, scroll));
+    let mut up = down;
+    let mut candidates = Vec::new();
+    for distance in 1..=render
+      .preload_ahead
+      .max(render.preload_behind)
+      .min(app.images.len())
+    {
+      for (route, forward, count) in [
+        (&mut down, true, render.preload_ahead),
+        (&mut up, false, render.preload_behind),
+      ] {
+        if distance > count {
+          continue;
+        }
+        if let Some((focused, previous_scroll)) = *route {
+          *route = layout.vertical_target(focused, forward).map(|next| {
+            let next_scroll =
+              layout.scroll_for_focus(next, previous_scroll, area.height, &layout_config.strategy);
+            candidates.push(next_scroll);
+            (next, next_scroll)
+          });
+        }
+      }
+    }
+    candidates
+  };
+  let mut scrolls = std::collections::HashSet::new();
+  scrolls.insert(scroll);
+  for scroll in candidates {
+    if !scrolls.insert(scroll) {
       continue;
-    };
-    let inner = card_inner_area(Rect::new(0, 0, card.width, card.height), layout_config);
-    let (image_area, _) = split_card_content(inner, layout_config);
-    images.preload(item, image_area, alignment);
+    }
+    for index in layout.visible_indices(scroll, area.height) {
+      let item = &app.images[index];
+      let card = &layout.cards[index];
+      if !images.can_preload() {
+        return;
+      }
+      let Some(screen) = screen_rect(*card, area, scroll) else {
+        continue;
+      };
+      let hidden_top = scroll.saturating_sub(card.y) as u16;
+      let inner = card_inner_area(Rect::new(0, 0, card.width, card.height), layout_config);
+      let (image_area, _) = split_card_content(inner, layout_config);
+      let fitted = image::fit_image_rect(image_area, item, app.terminal_cell_pixels, alignment);
+      let visible = fitted.intersection(Rect::new(0, hidden_top, screen.width, screen.height));
+      if visible.is_empty() {
+        continue;
+      }
+      images.preload_window(
+        item,
+        img_tui::NativeImageViewport {
+          full_width_cells: fitted.width,
+          full_height_cells: fitted.height,
+          visible_width_cells: visible.width,
+          visible_height_cells: visible.height,
+          left_cells: u32::from(visible.x - fitted.x),
+          top_cells: u32::from(visible.y - fitted.y),
+        },
+        (area.height / layout_config.scroll_divisor).max(1),
+      );
+    }
   }
 }
 
 fn preload_detail_neighbors(app: &App, images: &mut FrameImages, image_area: Rect) {
   if image_area.width == 0 || image_area.height == 0 || app.images.is_empty() {
+    return;
+  }
+  if !images.can_preload() {
     return;
   }
   let render = &app.settings.config.render;
@@ -313,7 +574,13 @@ fn preload_detail_neighbors(app: &App, images: &mut FrameImages, image_area: Rec
   }
 }
 
-fn draw_metadata(frame: &mut Frame, theme: &ThemeConfig, item: &ImageItem, area: Rect) {
+fn draw_metadata(
+  frame: &mut Frame,
+  theme: &ThemeConfig,
+  item: &ImageItem,
+  area: Rect,
+  scroll: u16,
+) -> (u16, u16) {
   let mut lines = vec![
     metadata_line("file", &item.file_name, theme),
     metadata_line("path", &item.path.display().to_string(), theme),
@@ -346,61 +613,22 @@ fn draw_metadata(frame: &mut Frame, theme: &ThemeConfig, item: &ImageItem, area:
       ));
     }
   }
+  let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+  let max_scroll = paragraph
+    .line_count(area.width.saturating_sub(2))
+    .saturating_sub(usize::from(area.height.saturating_sub(2)))
+    .min(usize::from(u16::MAX)) as u16;
+  let scroll = scroll.min(max_scroll);
   frame.render_widget(
-    Paragraph::new(Text::from(lines))
-      .block(
-        Block::default()
-          .borders(Borders::ALL)
-          .title("metadata")
-          .border_style(Style::default().fg(theme.color(&theme.border))),
-      )
-      .wrap(Wrap { trim: false }),
+    paragraph.scroll((scroll, 0)).block(
+      Block::default()
+        .borders(Borders::ALL)
+        .title("metadata")
+        .border_style(Style::default().fg(theme.color(&theme.border))),
+    ),
     area,
   );
-}
-
-fn clear_clipped_card_edges(frame: &mut Frame, theme: &ThemeConfig, card: &CardView) {
-  let style = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.background));
-  let area = card.area;
-  if card.top_clipped {
-    clear_row(frame, area, area.y, style);
-  }
-  if card.bottom_clipped && area.height > 1 {
-    clear_row(
-      frame,
-      area,
-      area.y.saturating_add(area.height.saturating_sub(1)),
-      style,
-    );
-  }
-}
-
-fn clear_row(frame: &mut Frame, area: Rect, y: u16, style: Style) {
-  let buf = frame.buffer_mut();
-  for x in area.x..area.x.saturating_add(area.width) {
-    if let Some(cell) = buf.cell_mut((x, y)) {
-      cell.set_symbol(" ");
-      cell.set_style(style);
-    }
-  }
-}
-
-fn draw_label(frame: &mut Frame, label: &str, area: Rect, style: Style) {
-  if area.width == 0 || area.height == 0 {
-    return;
-  }
-  frame.render_widget(Block::default().style(style), area);
-  let text = if area.height <= 1 {
-    truncate_for_width(label, area.width as usize)
-  } else {
-    wrap_for_area(label, area.width as usize, area.height as usize)
-  };
-  frame.render_widget(
-    Paragraph::new(text).style(style).wrap(Wrap { trim: false }),
-    area,
-  );
+  (scroll, max_scroll)
 }
 
 fn split_card_content(area: Rect, layout: &EffectiveLayoutConfig) -> (Rect, Option<Rect>) {
@@ -561,5 +789,48 @@ fn card_inner_area(area: Rect, layout: &EffectiveLayoutConfig) -> Rect {
   } else {
     area
   };
-  safe_inner(area, layout.padding, layout.padding)
+  let inner = safe_inner(area, layout.padding, layout.padding);
+  let label = u16::from(layout.show_page_numbers).min(inner.height);
+  Rect::new(
+    inner.x,
+    inner.y.saturating_add(label),
+    inner.width,
+    inner.height.saturating_sub(label),
+  )
+}
+
+/// Continue speculative work after background completions without drawing a frame.
+pub fn pump_preload(app: &App, renderer: &mut RenderStore, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  if app.view != ViewMode::Browser {
+    return;
+  }
+  let (Some(layout), Some(area)) = (app.browser_layout(), app.browser_viewport()) else {
+    return;
+  };
+  let config = app.settings.config.layout.effective();
+  let mut images = FrameImages::new(renderer, tx, app.terminal_cell_pixels);
+  preload_browser_neighbors(
+    app,
+    &mut images,
+    BrowserPanelView {
+      layout,
+      config: &config,
+      area,
+      scroll: app.browser_scroll,
+      following: false,
+    },
+  );
+  if let Some(panel) = &app.follower {
+    preload_browser_neighbors(
+      app,
+      &mut images,
+      BrowserPanelView {
+        layout: &panel.layout,
+        config: &panel.config,
+        area: panel.area,
+        scroll: panel.scroll,
+        following: true,
+      },
+    );
+  }
 }

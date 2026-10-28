@@ -1,4 +1,4 @@
-use img_tui::{ProtocolOverlay, reserve_protocol_area};
+use img_tui::{NativeImageViewport, ProtocolOverlay, reserve_protocol_area};
 use ratatui::{
   Frame,
   layout::{Alignment, Rect},
@@ -41,6 +41,7 @@ pub(super) struct FrameImages<'a> {
   /// Keep previous protocol images visible where new ones are still pending.
   pub(super) preserve_overlays: bool,
   pub(super) preserve_areas: Vec<Rect>,
+  visible_pending: bool,
 }
 
 impl<'a> FrameImages<'a> {
@@ -49,7 +50,6 @@ impl<'a> FrameImages<'a> {
     tx: &'a mpsc::UnboundedSender<AsyncEvent>,
     cell_pixels: Option<(u16, u16)>,
   ) -> Self {
-    renderer.begin_frame();
     Self {
       renderer,
       tx,
@@ -57,6 +57,7 @@ impl<'a> FrameImages<'a> {
       overlays: Vec::new(),
       preserve_overlays: false,
       preserve_areas: Vec::new(),
+      visible_pending: false,
     }
   }
 
@@ -74,15 +75,36 @@ impl<'a> FrameImages<'a> {
       return;
     }
     let image_area = fit_image_rect(area, item, self.cell_pixels, alignment);
+    self.draw_window(
+      frame,
+      item,
+      image_area,
+      NativeImageViewport {
+        full_width_cells: image_area.width,
+        full_height_cells: image_area.height,
+        visible_width_cells: image_area.width,
+        visible_height_cells: image_area.height,
+        left_cells: 0,
+        top_cells: 0,
+      },
+      position,
+    );
+  }
+
+  pub(super) fn draw_window(
+    &mut self,
+    frame: &mut Frame,
+    item: &ImageItem,
+    image_area: Rect,
+    viewport: NativeImageViewport,
+    position: (usize, usize),
+  ) {
     if image_area.width == 0 || image_area.height == 0 {
       return;
     }
 
     let draws_with_protocol = self.renderer.draws_with_protocol();
-    match self
-      .renderer
-      .request(item, image_area.width, image_area.height, self.tx)
-    {
+    match self.renderer.request_viewport(item, viewport, self.tx) {
       RenderState::Ready(RenderedImage::Symbols { paragraph, .. }) => {
         frame.render_widget(&**paragraph, image_area);
       }
@@ -97,10 +119,12 @@ impl<'a> FrameImages<'a> {
         );
       }
       RenderState::Pending if draws_with_protocol => {
+        self.visible_pending = true;
         self.preserve_overlays = true;
         self.preserve_areas.push(image_area);
       }
       RenderState::Pending => {
+        self.visible_pending = true;
         frame.render_widget(
           Paragraph::new(rendering_text(item, position))
             .alignment(Alignment::Center)
@@ -108,6 +132,24 @@ impl<'a> FrameImages<'a> {
           image_area,
         );
       }
+    }
+  }
+
+  pub(super) fn can_preload(&self) -> bool {
+    !self.visible_pending && self.renderer.has_preload_capacity()
+  }
+
+  pub(super) fn preload_window(
+    &mut self,
+    item: &ImageItem,
+    viewport: NativeImageViewport,
+    slice_height: u16,
+  ) {
+    for slice in viewport.slices(slice_height) {
+      if !self.can_preload() {
+        break;
+      }
+      self.renderer.preload_viewport(item, slice, self.tx);
     }
   }
 

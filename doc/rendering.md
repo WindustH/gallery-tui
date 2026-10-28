@@ -45,3 +45,35 @@ not render it again. See [Cache and Logs](cache-and-logs.md).
 
 Animated GIF and WebP files show their first frame. Which extensions are
 scanned at all is set by `supported_extensions` in `config.toml`.
+
+Masonry cards and slides sidebar thumbnails use fixed image-local slices.
+Grid and list render whole images in fixed-height, row-aligned cards. `[layout] scroll_divisor = 8`
+sets the slice height limit to `max(1, viewport_rows / 8)`; each image gets
+as many slices as its fitted height needs. Changing this value changes
+slice granularity, not image scale. The first and last visible slices may
+be cropped further at the window edges.
+
+Preloading follows spatial navigation to predict the view after focusing nearby images and renders those
+same slices, including boundary fragments. It uses `preload_ahead` and
+`preload_behind`, runs only in spare worker slots, and reserves a worker for
+visible images. Decoded, scaled source images are shared across slice jobs;
+the raw-memory budget is split between these sources and finished renders.
+Protocol slices are encoded directly from shared pixels; only the text fallback
+materializes PNG slices, which share the SQLite disk budget. Slice renders
+use the existing raw-memory, compressed-memory and SQLite cache tiers.
+
+
+Slice geometry and prepared-source caching live in `img-tui::slicing`. The
+visible draw and speculative preload use the same viewport plan and cache
+identity. Concurrent slices of one image share its decode; unrelated images
+can prepare concurrently. Completed renders become drawable before optional
+compressed-memory/SQLite persistence. Persistence uses a bounded queue and may
+skip entries under pressure; the ready memory cache is still available.
+Kitty transmits PNG when it is smaller than raw pixels. The default slice divisor
+is 8 and applies only to masonry panels (including the slides sidebar).
+
+Preload completion alone does not redraw the screen. A preload requested by the visible viewport is promoted for display, and speculative failures have a five-second cooldown without becoming persistent visible errors. Both whole-image and sliced native rendering share prepared images and use the same cell-to-pixel scaling. Browser geometry is reused until its image list, configuration, terminal cell size, or viewport changes.
+
+Command prompts, completion lists, status messages, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Permanent navigation (the music tab bar and Calibre search header) keeps its existing position.
+Kitty Unicode images are occluded through text cells without changing image geometry. Pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.
+A composite panel displaying a single grid image uses neutral card colors; the sidebar retains focus/selection markers.

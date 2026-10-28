@@ -14,6 +14,7 @@ impl App {
   fn apply_sort(&mut self, sort_spec: SortSpec) {
     let focused_path = self.current().map(|item| item.path.clone());
     sort_images(&mut self.images, &sort_spec);
+    self.invalidate_layout();
     self.sort_spec = sort_spec.clone();
     self.restore_focus(focused_path.as_deref());
     self.set_message(format!("sort: {}", sort_spec.label()));

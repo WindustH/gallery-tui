@@ -5,7 +5,7 @@ use crossterm::event::Event;
 use crate::{
   cache::CacheCleanupReport,
   metadata::MetadataEdit,
-  model::{ImageItem, ImageMetadataEntry, SortSpec},
+  model::{ImageItem, SortSpec},
   render::RenderOutcome,
 };
 
@@ -53,7 +53,7 @@ pub struct ConfigSaveOutcome {
 pub struct MetadataWriteOutcome {
   pub from: PathBuf,
   pub to: PathBuf,
-  pub result: Result<Vec<ImageMetadataEntry>, String>,
+  pub result: Result<ImageItem, String>,
   pub edit: MetadataEdit,
   pub rename_applied: bool,
 }

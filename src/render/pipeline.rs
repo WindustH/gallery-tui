@@ -1,11 +1,14 @@
 //! One render job: try each render mode in order, reading the compressed
 //! memory and disk cache tiers before rendering from the source image.
 
-use std::path::{Path, PathBuf};
+use std::{
+  path::{Path, PathBuf},
+  sync::Arc,
+};
 
 use img_tui::{
-  EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
-  native_image,
+  EncodedProtocolImage, NativeImageConfig, NativeImageViewport, ProtocolImage, ProtocolImageSpec,
+  RenderMode, native_image,
 };
 use ratatui::widgets::Paragraph;
 use tokio::fs;
@@ -25,13 +28,36 @@ pub(super) struct RenderContext {
   pub(super) config: RenderConfig,
   pub(super) native_config: NativeImageConfig,
   pub(super) modes: Vec<RenderMode>,
-  pub(super) compressed_memory: LruCache<String, Vec<u8>>,
+  pub(super) compressed_memory: Arc<LruCache<String, Vec<u8>>>,
+  pub(super) cache_writer: tokio::sync::mpsc::Sender<CacheWrite>,
   pub(super) session_nonce: u32,
+  pub(super) prepared: img_tui::slicing::PreparedImageCache,
 }
 
 type PreparedNative = Option<Result<native_image::PreparedNativeImage, String>>;
 
 impl RenderContext {
+  async fn prepare_image(
+    &self,
+    path: &Path,
+    width: u16,
+    height: u16,
+  ) -> Result<native_image::PreparedNativeImage, String> {
+    let key = render_cache_key(
+      path,
+      width,
+      height,
+      &self.config,
+      &self.native_config,
+      RenderMode::Symbols,
+      0,
+    );
+    self
+      .prepared
+      .prepare(key, path, (width, height), self.native_config.cell_pixels)
+      .await
+  }
+
   pub(super) fn clear_compressed_memory(&self) {
     self.compressed_memory.clear();
   }
@@ -53,6 +79,7 @@ impl RenderContext {
     image_path: &Path,
     width: u16,
     height: u16,
+    viewport: Option<NativeImageViewport>,
   ) -> Result<RenderedImage, String> {
     // SVGs cannot be decoded by the `image` crate or Chafa: rasterize to a
     // cached PNG (oversampled 2x for crisp downscaling) and render that.
@@ -74,7 +101,7 @@ impl RenderContext {
     // Protocol modes share one decoded and resized source image.
     let mut prepared_native = None;
     for &mode in &self.modes {
-      let job = ModeJob::new(self, image_path, width, height, mode);
+      let job = ModeJob::new(self, image_path, width, height, mode, viewport);
       match job.run(&mut prepared_native).await {
         Ok(rendered) => {
           debug!(path = %image_path.display(), mode = mode.label(), "render succeeded");
@@ -97,6 +124,7 @@ struct ModeJob<'a> {
   cache_key: String,
   cache_path: PathBuf,
   header: CacheHeader,
+  viewport: Option<NativeImageViewport>,
 }
 
 impl<'a> ModeJob<'a> {
@@ -106,8 +134,9 @@ impl<'a> ModeJob<'a> {
     width: u16,
     height: u16,
     mode: RenderMode,
+    viewport: Option<NativeImageViewport>,
   ) -> Self {
-    let cache_key = render_cache_key(
+    let mut cache_key = render_cache_key(
       image_path,
       width,
       height,
@@ -116,8 +145,23 @@ impl<'a> ModeJob<'a> {
       mode,
       ctx.session_nonce,
     );
+    // Distinct slices need distinct terminal placement identities, even if
+    // their pixels happen to be identical (e.g. a solid background).
+    if let Some(viewport) = viewport {
+      cache_key.push('-');
+      cache_key.push_str(&viewport.cache_fragment());
+    }
     let cache_path = ctx.cache_dir.join(format!("{cache_key}.ansi"));
-    let image_id = kitty_image_id(image_path, width, height, mode, ctx.session_nonce);
+    let (width, height) = viewport
+      .map(|v| (v.visible_width_cells, v.visible_height_cells))
+      .unwrap_or((width, height));
+    let image_id = kitty_image_id(
+      Path::new(&cache_key),
+      width,
+      height,
+      mode,
+      ctx.session_nonce,
+    );
     let placement_id = if ctx.native_config.kitty_unicode_placeholders || mode != RenderMode::Kitty
     {
       None
@@ -129,6 +173,7 @@ impl<'a> ModeJob<'a> {
       image_path,
       cache_key,
       cache_path,
+      viewport,
       header: CacheHeader {
         width,
         height,
@@ -164,11 +209,11 @@ impl<'a> ModeJob<'a> {
       self.render_protocol(prepared_native).await?
     } else {
       RenderedBytes {
-        data: run_chafa(self.image_path, &self.header, &ctx.config).await?,
+        data: self.render_symbols().await?,
         refresh: None,
       }
     };
-    self.store(&bytes, can_write_disk_cache).await;
+    self.store(&bytes, can_write_disk_cache);
     decode_rendered(bytes, &self.header, &ctx.native_config)
   }
 
@@ -263,35 +308,66 @@ impl<'a> ModeJob<'a> {
     .await
   }
 
-  /// Save a fresh render to the compressed memory tier and, when possible,
-  /// the disk tier.
-  async fn store(&self, bytes: &RenderedBytes, write_disk: bool) {
-    let ctx = self.ctx;
-    let cached = match self.encode(bytes).await {
-      Ok(cached) => cached,
-      Err(error) => {
-        warn!(
-          cache = %self.cache_path.display(),
-          %error,
-          "failed to encode render cache"
-        );
-        return;
+  /// Cache persistence is optional and must not hold visible rendering workers.
+  fn store(&self, bytes: &RenderedBytes, write_disk: bool) {
+    if let Ok(permit) = self.ctx.cache_writer.try_reserve() {
+      permit.send(CacheWrite {
+        key: self.cache_key.clone(),
+        path: self.cache_path.clone(),
+        header: self.header,
+        bytes: bytes.clone(),
+        write_disk,
+      });
+    }
+  }
+
+  async fn render_symbols(&self) -> Result<Vec<u8>, String> {
+    let Some(viewport) = self.viewport else {
+      return run_chafa(self.image_path, &self.header, &self.ctx.config).await;
+    };
+    // Only the external text backend needs materialized PNG slices.
+    let identity = render_cache_key(
+      self.image_path,
+      viewport.full_width_cells,
+      viewport.full_height_cells,
+      &self.ctx.config,
+      &self.ctx.native_config,
+      RenderMode::Symbols,
+      0,
+    );
+    let key = format!(
+      "slice-v2-grid-{identity}-{}-{}-{}-{}",
+      viewport.left_cells,
+      viewport.top_cells,
+      viewport.visible_width_cells,
+      viewport.visible_height_cells
+    );
+    let logical = self.ctx.cache_dir.join("slices").join(format!("{key}.png"));
+    let slice = match files::materialize(&logical) {
+      Ok(path) => path,
+      Err(_) => {
+        let prepared = self
+          .ctx
+          .prepare_image(
+            self.image_path,
+            viewport.full_width_cells,
+            viewport.full_height_cells,
+          )
+          .await?;
+        let bytes = native_image::encode_prepared_viewport_png(
+          &prepared,
+          viewport,
+          self.ctx.native_config.cell_pixels,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        files::write(&logical, &bytes)
+          .await
+          .map_err(|e| e.to_string())?;
+        files::materialize(&logical).map_err(|e| e.to_string())?
       }
     };
-    ctx.compressed_insert(self.cache_key.clone(), cached.clone());
-    if !write_disk {
-      return;
-    }
-    match files::write(&self.cache_path, &cached).await {
-      Ok(()) => {}
-      Err(error) => {
-        warn!(
-          cache = %self.cache_path.display(),
-          %error,
-          "failed to write render cache"
-        );
-      }
-    }
+    run_chafa(&slice, &self.header, &self.ctx.config).await
   }
 
   async fn render_protocol(
@@ -300,17 +376,34 @@ impl<'a> ModeJob<'a> {
   ) -> Result<RenderedBytes, String> {
     let ctx = self.ctx;
     let header = &self.header;
+    if let Some(viewport) = self.viewport {
+      let prepared = ctx
+        .prepare_image(
+          self.image_path,
+          viewport.full_width_cells,
+          viewport.full_height_cells,
+        )
+        .await?;
+      return native_image::encode_protocol_viewport(
+        &prepared,
+        viewport,
+        &protocol_spec(header),
+        &ctx.native_config,
+      )
+      .await
+      .map(|encoded| RenderedBytes {
+        data: encoded.data,
+        refresh: encoded.refresh,
+      })
+      .map_err(|e| e.to_string());
+    }
+
     let prepared = match prepared_native {
       Some(prepared) => prepared,
       None => prepared_native.insert(
-        native_image::prepare(
-          self.image_path,
-          header.width,
-          header.height,
-          header.cell_pixels,
-        )
-        .await
-        .map_err(|err| err.to_string()),
+        ctx
+          .prepare_image(self.image_path, header.width, header.height)
+          .await,
       ),
     };
     let prepared = prepared.as_ref().map_err(Clone::clone)?;
@@ -379,4 +472,39 @@ fn protocol_spec(header: &CacheHeader) -> ProtocolImageSpec {
     placement_id: header.placement_id,
     ..ProtocolImageSpec::new(header.mode, header.width, header.height)
   }
+}
+
+/// Bounded persistence queue: under pressure keep the ready memory render and
+/// skip optional persistence rather than delaying pixels or accumulating tasks.
+pub(super) struct CacheWrite {
+  key: String,
+  path: PathBuf,
+  header: CacheHeader,
+  bytes: RenderedBytes,
+  write_disk: bool,
+}
+pub(super) fn cache_writer(
+  config: &RenderConfig,
+  memory: Arc<LruCache<String, Vec<u8>>>,
+) -> tokio::sync::mpsc::Sender<CacheWrite> {
+  let (tx, mut rx) =
+    tokio::sync::mpsc::channel::<CacheWrite>(config.max_concurrent.max(1).saturating_mul(2));
+  let level = config.cache_compression_level;
+  let threads = config.cache_compression_threads;
+  tokio::spawn(async move {
+    while let Some(write) = rx.recv().await {
+      match encode_cache_file(&write.bytes, &write.header, level, threads).await {
+        Ok(bytes) => {
+          memory.insert(write.key, bytes.clone(), bytes.len() as u64);
+          if write.write_disk
+            && let Err(error) = files::write(&write.path, &bytes).await
+          {
+            warn!(%error, "failed to persist render cache");
+          }
+        }
+        Err(error) => warn!(%error, "failed to compress render cache"),
+      }
+    }
+  });
+  tx
 }

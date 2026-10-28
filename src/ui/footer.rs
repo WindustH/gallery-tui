@@ -50,6 +50,7 @@ pub(super) fn draw_footer(
   if area.height == 0 {
     return;
   }
+  frame.render_widget(ratatui::widgets::Clear, area);
   let theme = &app.settings.theme;
   let status_height = u16::from(status_visible(app));
   let status_area = if status_height == 1 {

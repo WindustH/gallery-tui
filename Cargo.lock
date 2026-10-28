@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "framework-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "gallery-tui"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1007,6 +1007,7 @@ dependencies = [
  "resvg",
  "serde",
  "sha2 0.11.0",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -1222,7 +1223,7 @@ checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
 name = "img-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

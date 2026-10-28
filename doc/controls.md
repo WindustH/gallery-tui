@@ -8,7 +8,11 @@ keys do nothing in detail view and the other way round.
 
 | Key | Action |
 | --- | --- |
-| `v p` | Switch to `slides 1 5` and save it to `config.toml` |
+| `. b` | Switch to `browse_with_preview`: primary 3-column/5-row grid on the left, following 1×1 preview on the right, ratio 2:3 |
+| `. p` | Switch to `slides 1 5` and save it to `config.toml` |
+| `. g` | Switch to `grid 4 2` and save it to `config.toml` |
+| `. m` | Switch to `masonry 5` and save it to `config.toml` |
+| `. l` | Switch to `list 6` and save it to `config.toml` |
 | `h` `j` `k` `l`, arrow keys | Move focus |
 | `pgup`, `pgdn` | Move focus by one screen of cards |
 | `home` or `g g` | First image |
@@ -73,3 +77,5 @@ before the extension.
 - Confirmation dialog: `y` applies the change; `n`, `enter`, `esc`, or `q`
   cancels.
 - Key binding list (`f1`): `f1`, `esc`, `q`, or `enter` closes it.
+
+On the metadata page, `j`/`k` and the mouse wheel scroll tags, `PgUp`/`PgDn` scroll a screen, and `gg`/`G` go to the beginning/end. On the image page, `j`/`k` still select the next/previous image.

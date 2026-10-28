@@ -27,6 +27,14 @@ impl App {
       self.handle_confirm_input(input, tx);
       return InputEffect::Other;
     }
+    if let Event::Mouse(mouse) = &input
+      && self
+        .overlay_areas
+        .iter()
+        .any(|area| area.contains((mouse.column, mouse.row).into()))
+    {
+      return InputEffect::None;
+    }
     match input {
       Event::Key(key) if self.prompt.is_some() => {
         self.handle_prompt_key(key, tx);
@@ -137,7 +145,8 @@ impl App {
               rename_applied = true;
             }
             metadata::write_metadata_with_exiftool(&to, &edit.tags)?;
-            Ok(metadata::read_image_metadata(&to))
+            crate::scanner::image_item_from_path(to.clone())
+              .ok_or_else(|| "could not reload the edited image".to_string())
           })();
           let _ = tx.send(AsyncEvent::MetadataWrite(MetadataWriteOutcome {
             from: path,
@@ -159,7 +168,7 @@ impl App {
     let context = self.key_context();
     match self.key_dispatcher.dispatch(&self.keymap, context, token) {
       MatchResult::Action(action) => self.handle_action(&action, tx),
-      MatchResult::Prefix(_) | MatchResult::None => InputEffect::None,
+      MatchResult::Prefix(_) | MatchResult::None => InputEffect::Other,
     }
   }
 
@@ -211,6 +220,8 @@ impl App {
           | "move_right"
           | "home"
           | "end"
+          | "page_up"
+          | "page_down"
           | "edit_metadata"
       ),
     }

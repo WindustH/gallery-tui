@@ -46,6 +46,7 @@ preset and holds card settings that presets can override.
 | --- | --- | --- |
 | `active` | `"grid"` | Preset used at startup |
 | `active_args` | `["4", "2"]` | Arguments for that preset, as with `:layout` |
+| `scroll_divisor` | `8` | Masonry/slides slice height limit: viewport rows divided by this value, minimum one row |
 | `gap_x`, `gap_y` | `0`, `0` | Space between cards, in cells |
 | `card_style` | `"image_with_name"` | `"image_only"` hides the filename |
 | `show_filename` | `true` | Show the filename |
@@ -128,9 +129,9 @@ as `3x3` also works.
 | `chafa_threads` | `1` | `--threads` value for each Chafa run; `0` leaves it to Chafa |
 | `max_concurrent` | `4` | Images rendered at the same time |
 | `preload_ahead`, `preload_behind` | `6`, `2` | Images after and before the focused one to render in advance |
-| `raw_memory_cache_max_bytes` | `134217728` (128 MiB) | Memory for finished renders |
+| `raw_memory_cache_max_bytes` | `134217728` (128 MiB) | Memory shared between finished renders and decoded, scaled source images |
 | `compressed_memory_cache_max_bytes` | `268435456` (256 MiB) | Memory for compressed renders |
-| `disk_cache_max_bytes` | `536870912` (512 MiB) | Disk space for the render cache, enforced at startup |
+| `disk_cache_max_bytes` | `536870912` (512 MiB) | Live SQLite cache payload bytes, enforced on writes |
 | `cache_compression_level` | `3` | zstd level for cached renders |
 | `cache_compression_threads` | `2` | zstd worker threads; `0` compresses on the calling thread |
 | `zellij_sixel` | `false` | Sixel inside Zellij: `off`, `auto`, or `on` (see [Terminal Graphics](terminal-graphics.md#zellij)) |
@@ -166,3 +167,63 @@ automatically.
 Shared rendering settings accept `zellij_sixel = true`, `false`, or `"auto"`.
 Legacy `"on"`/`"off"` values remain readable. `render.disk_cache_max_bytes`
 is the canonical disk budget; `cache_max_bytes` remains a read alias.
+
+
+## Composite layouts
+
+A composite references two ordinary presets. Their rendering, spacing, labels,
+and caches remain independent. The composition controls only the split and
+synchronization:
+
+```toml
+[layout.presets.review]
+strategy = "composite"
+params = ["first_ratio", "second_ratio"]
+
+[layout.presets.review.composition]
+direction = "horizontal"
+ratio = [1, 5]
+gap = 1
+primary = "second"
+
+[layout.presets.review.composition.first]
+layout = "slides-sidebar"
+args = []
+
+[layout.presets.review.composition.second]
+layout = "slides-main"
+args = []
+```
+
+Use `:layout-use review` to try it, or `:layout review` to save the selection.
+`:layout-use review 2 3` overrides the ratio. `horizontal` means left/right;
+`vertical` means top/bottom. `gap` is measured in terminal cells on the split
+axis and may be zero. The ratio applies after subtracting the gap.
+`primary = "first"` or `"second"` chooses the panel controlled by keys and the
+wheel. The other panel follows its reading position, centered as closely as
+its layout and document edges allow. Clicking a follower item navigates the
+primary. Each reference's `args` uses that preset's normal argument order.
+Nested compositions are rejected.
+
+The built-in `slides` is this mechanism's preset, using `slides-sidebar` and
+`slides-main`. Configure these **leaf presets** to change borders, labels, or
+image layout; configure `layout.presets.slides.composition` to change the
+split. Old `strategy = "slides"` presets remain accepted as compatibility
+aliases, but new presets should use `strategy = "composite"`.
+
+`show_page_numbers = true` works globally under `[layout]` or as a leaf-preset
+override. It reserves one line above each item and works without borders.
+The built-in sidebar is one-column `masonry`; the main panel is a `1 × 1`
+`grid`. Following uses the focused image index and fractional visible position
+inside its card. Grid/list panels always retain fixed-height, whole-image rows;
+composition never turns them into sliced layouts. A masonry leaf can override
+`scroll_divisor` (default 8); slicing and preloading use that panel's own height.
+Follower preloading predicts the primary's navigation path before mapping each
+predicted position to follower slices.
+
+The built-in `browse_with_preview` is another `composite` preset: `first`
+references `grid` with `args = ["3", "5"]`, `second` references `grid` with
+`args = ["1", "1"]`, and its split uses `ratio = [2, 3]`, `gap = 1`, and
+`primary = "first"`. Activate it with `. b` or `:layout browse_with_preview`.
+Both panels inherit the ordinary `grid` preset's styling; the one-image
+preview uses neutral focus/selection colors.

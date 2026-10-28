@@ -98,7 +98,7 @@ fn read_image_items(paths: Vec<PathBuf>) -> Vec<ImageItem> {
   items.into_iter().map(|(_, item)| item).collect()
 }
 
-fn image_item_from_path(path: PathBuf) -> Option<ImageItem> {
+pub(crate) fn image_item_from_path(path: PathBuf) -> Option<ImageItem> {
   let metadata = match std::fs::metadata(&path) {
     Ok(metadata) => metadata,
     Err(error) => {

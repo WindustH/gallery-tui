@@ -3,6 +3,16 @@ use std::path::Path;
 use crate::app::{App, DetailPage, ViewMode};
 
 impl App {
+  fn scroll_metadata(&mut self, delta: isize) -> bool {
+    if self.view != ViewMode::Detail || self.detail_page != DetailPage::Metadata {
+      return false;
+    }
+    self.metadata_scroll = usize::from(self.metadata_scroll)
+      .saturating_add_signed(delta)
+      .min(usize::from(self.metadata_max_scroll)) as u16;
+    true
+  }
+
   pub(super) fn handle_back(&mut self) {
     if self.view == ViewMode::Detail {
       if self.detail_back_quits {
@@ -30,6 +40,9 @@ impl App {
   }
 
   pub(super) fn move_down(&mut self) {
+    if self.scroll_metadata(1) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => self.focus_vertical(1),
       ViewMode::Detail => self.focus_relative(1),
@@ -37,6 +50,9 @@ impl App {
   }
 
   pub(super) fn move_up(&mut self) {
+    if self.scroll_metadata(-1) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => self.focus_vertical(-1),
       ViewMode::Detail => self.focus_relative(-1),
@@ -44,6 +60,9 @@ impl App {
   }
 
   pub(super) fn page_up(&mut self) {
+    if self.scroll_metadata(-(self.metadata_view_height as isize)) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => {
         let count = self.page_item_count();
@@ -54,6 +73,9 @@ impl App {
   }
 
   pub(super) fn page_down(&mut self) {
+    if self.scroll_metadata(self.metadata_view_height as isize) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => {
         let count = self.page_item_count();
@@ -64,11 +86,17 @@ impl App {
   }
 
   pub(super) fn focus_first(&mut self) {
+    if self.scroll_metadata(-isize::MAX) {
+      return;
+    }
     self.focused = 0;
     self.ensure_focus_visible();
   }
 
   pub(super) fn focus_last(&mut self) {
+    if self.scroll_metadata(isize::MAX) {
+      return;
+    }
     if !self.images.is_empty() {
       self.focused = self.images.len() - 1;
       self.ensure_focus_visible();
@@ -99,6 +127,9 @@ impl App {
   }
 
   pub(super) fn handle_scroll_down(&mut self) {
+    if self.scroll_metadata(3) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => self.focus_vertical(1),
       ViewMode::Detail => self.focus_relative(1),
@@ -106,6 +137,9 @@ impl App {
   }
 
   pub(super) fn handle_scroll_up(&mut self) {
+    if self.scroll_metadata(-3) {
+      return;
+    }
     match self.view {
       ViewMode::Browser => self.focus_vertical(-1),
       ViewMode::Detail => self.focus_relative(-1),
@@ -114,6 +148,12 @@ impl App {
 
   pub(super) fn handle_mouse_click(&mut self, column: u16, row: u16) {
     if self.view != ViewMode::Browser || self.images.is_empty() {
+      return;
+    }
+    if let Some(index) = self.follower_image_at(column, row) {
+      self.focused = index;
+      self.key_dispatcher.clear();
+      self.ensure_focus_visible();
       return;
     }
     let Some(layout) = &self.last_layout else {
@@ -156,31 +196,12 @@ impl App {
     let Some(layout) = &self.last_layout else {
       return;
     };
-    let Some(card) = layout.cards.get(self.focused) else {
-      return;
-    };
-    let top = card.y;
-    let bottom = card.y.saturating_add(u32::from(card.height));
-    let viewport_height = u32::from(self.browser_view_height.max(1));
-    if self.settings.config.layout.effective().strategy == "slides" {
-      self.browser_scroll = top
-        .saturating_sub(viewport_height.saturating_sub(u32::from(card.height)) / 2)
-        .min(layout.total_height.saturating_sub(viewport_height));
-      return;
-    }
-    let visible_bottom = self.browser_scroll.saturating_add(viewport_height);
-    if u32::from(card.height) >= viewport_height {
-      if bottom <= self.browser_scroll || top >= visible_bottom {
-        self.browser_scroll = top;
-      }
-      return;
-    }
-
-    if top < self.browser_scroll {
-      self.browser_scroll = top;
-    } else if bottom > visible_bottom {
-      self.browser_scroll = bottom.saturating_sub(viewport_height);
-    }
+    self.browser_scroll = layout.scroll_for_focus(
+      self.focused,
+      self.browser_scroll,
+      self.browser_view_height,
+      &self.settings.config.layout.effective().strategy,
+    );
   }
 
   pub(super) fn restore_focus(&mut self, path: Option<&Path>) {
@@ -202,6 +223,7 @@ impl App {
       self.focused = 0;
       return;
     }
+    self.metadata_scroll = 0;
     let max = self.images.len() - 1;
     self.focused = self.focused.saturating_add_signed(delta).min(max);
     self.ensure_focus_visible();
@@ -214,6 +236,13 @@ impl App {
     };
     if layout.columns <= 1 {
       self.focus_relative(delta);
+      return;
+    }
+    if self.settings.config.layout.effective().strategy == "masonry" {
+      if let Some(index) = layout.horizontal_target(self.focused, delta > 0) {
+        self.focused = index;
+        self.ensure_focus_visible();
+      }
       return;
     }
     let col = self.focused % layout.columns;
@@ -236,24 +265,7 @@ impl App {
       return;
     }
 
-    let current = layout.cards[self.focused];
-    let target = layout
-      .cards
-      .iter()
-      .enumerate()
-      .filter(|(idx, card)| {
-        if delta > 0 {
-          *idx != self.focused && card.y > current.y
-        } else {
-          *idx != self.focused && card.y < current.y
-        }
-      })
-      .min_by_key(|(_, card)| {
-        let dy = card.y.abs_diff(current.y);
-        let dx = (card.center_x() - current.center_x()).unsigned_abs();
-        dy.saturating_mul(1000).saturating_add(dx)
-      })
-      .map(|(idx, _)| idx);
+    let target = layout.vertical_target(self.focused, delta > 0);
     if let Some(idx) = target {
       self.focused = idx;
       self.ensure_focus_visible();

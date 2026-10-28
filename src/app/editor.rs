@@ -1,8 +1,5 @@
+//! Requests to hand text or metadata to an external editor.
 use std::path::PathBuf;
-
-pub use framework_tui::{
-  CommandCompletion, Prompt, PromptBuffer, current_word_start, filter_completion_candidates,
-};
 
 #[derive(Debug, Clone)]
 pub enum EditorRequest {

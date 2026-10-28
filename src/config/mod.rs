@@ -9,9 +9,6 @@ mod theme;
 
 use std::path::PathBuf;
 
-#[cfg(unix)]
-use std::env;
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -135,56 +132,4 @@ fn app_cache_dir() -> PathBuf {
   platform_cache_dir().join("gallery-tui")
 }
 
-#[cfg(unix)]
-fn platform_config_dir() -> PathBuf {
-  unix_platform_dir(
-    env_path("XDG_CONFIG_HOME"),
-    dirs::home_dir(),
-    dirs::config_dir(),
-    ".config",
-    ".",
-  )
-}
-
-#[cfg(not(unix))]
-fn platform_config_dir() -> PathBuf {
-  dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
-#[cfg(unix)]
-fn platform_cache_dir() -> PathBuf {
-  unix_platform_dir(
-    env_path("XDG_CACHE_HOME"),
-    dirs::home_dir(),
-    dirs::cache_dir(),
-    ".cache",
-    ".cache",
-  )
-}
-
-#[cfg(not(unix))]
-fn platform_cache_dir() -> PathBuf {
-  dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"))
-}
-
-#[cfg(unix)]
-fn env_path(name: &str) -> Option<PathBuf> {
-  env::var_os(name)
-    .filter(|value| !value.is_empty())
-    .map(PathBuf::from)
-}
-
-#[cfg(unix)]
-fn unix_platform_dir(
-  xdg_dir: Option<PathBuf>,
-  home_dir: Option<PathBuf>,
-  fallback_dir: Option<PathBuf>,
-  home_child: &str,
-  default_dir: &str,
-) -> PathBuf {
-  xdg_dir
-    .filter(|path| !path.as_os_str().is_empty())
-    .or_else(|| home_dir.map(|home| home.join(home_child)))
-    .or(fallback_dir)
-    .unwrap_or_else(|| PathBuf::from(default_dir))
-}
+use framework_tui::paths::{cache_dir as platform_cache_dir, config_dir as platform_config_dir};

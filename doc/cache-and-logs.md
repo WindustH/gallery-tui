@@ -6,9 +6,8 @@ macOS (`$XDG_CACHE_HOME/gallery-tui/` when that variable is set) and
 
 | Path | Contents |
 | --- | --- |
-| `<hash>.ansi` | A rendered image |
-| `svg/<hash>.png` | An SVG rasterized at one preview size |
-| `*.used` | Last-use markers for the two above |
+| `cache.sqlite3` | Compressed terminal renders and SVG rasterizations as BLOBs |
+| `cache.sqlite3-wal`, `cache.sqlite3-shm` | SQLite WAL and coordination files |
 | `logs/<date>-<time>-<pid>-<nonce>.log` | One log per run |
 
 ## Render Cache
@@ -20,13 +19,16 @@ the source file:
 | --- | --- | --- |
 | Memory | Finished renders, ready to draw | `render.raw_memory_cache_max_bytes` (128 MiB) |
 | Compressed memory | zstd-compressed renders | `render.compressed_memory_cache_max_bytes` (256 MiB) |
-| Disk | The compressed files listed above | `render.disk_cache_max_bytes` (512 MiB) |
+| Disk | SQLite payloads | `render.disk_cache_max_bytes` (512 MiB) |
 
-Limits are in bytes, and `0` removes a limit. The memory levels drop their least
-recently used entries as they fill. The disk limit is enforced at startup, by
-deleting the least recently used files until the cache fits. A file's last use
-is tracked with its `.used` marker rather than file access times, which many
-systems do not update.
+`img-tui` implements both memory tiers using moka with explicit LRU eviction
+and byte weights. `0` removes a limit. Memory budgets are approximate; the
+currently borrowed render and one oversized result may outlive eviction.
+SQLite enforces its live-payload budget transactionally on writes and at
+startup. Access timestamps replace the old `.used` files and are coarsened
+to one minute. One newly written oversized payload may exceed the budget.
+Physical database pages, WAL and active temporary images are extra storage;
+cleanup checkpoints and incrementally vacuums reusable space.
 
 Cached renders are keyed by the image path, size, and modification time, the
 preview size, the render mode, the terminal cell size, and the render settings,
@@ -42,16 +44,20 @@ Compression is set by `render.cache_compression_level` and
 :clear-cache
 ```
 
-deletes the `.ansi` renders, SVG rasterizations, and their `.used` markers, and
-empties both memory levels. Logs and any other files are kept.
+clears SQLite payloads and both memory levels. Logs and other files are kept.
+In-flight jobs and subsequent requests may insert new entries after clearing.
+
+On the first SQLite-cache startup, old `.ansi` files, `.used` markers and the
+`svg/` cache directory are deleted, without importing or precomputing entries.
 
 ## Sharing
 
-Several gallery-tui instances can share one cache directory. Cache files,
-markers, and rewritten config files are written to a temporary file next to the
-target and then renamed over it, so another instance sees either the old or
-the new complete file. Cleanup tolerates files that another instance already
-removed.
+Each application has a separate database. Multiple gallery-tui processes can
+share the same local SQLite cache using WAL transactions and a busy timeout.
+File-only consumers use private content-addressed temporary images held for
+the cache session's lifetime, so deleting a database row does not invalidate
+an image another process is displaying. These files are removed on normal
+session shutdown.
 
 ## Temporary Files
 

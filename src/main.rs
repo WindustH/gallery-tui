@@ -1,4 +1,6 @@
 mod app;
+use img_tui::cache::paths::NamespaceSpec;
+
 mod cache;
 mod config;
 mod event;
@@ -7,6 +9,7 @@ mod layout;
 mod logging;
 mod metadata;
 mod model;
+mod rename;
 mod render;
 mod scanner;
 mod svg;
@@ -66,6 +69,15 @@ async fn main() -> Result<()> {
   let startup = startup_target(input, cli.browser)?;
 
   let settings = config::load_or_create().await?;
+  let _image_cache = img_tui::cache::paths::CachePaths::new(
+    &settings.cache_dir,
+    &[
+      NamespaceSpec::new("", "render", false).with_extension("ansi"),
+      NamespaceSpec::new("svg", "svg", true),
+    ],
+    settings.config.render.disk_cache_max_bytes,
+  )?;
+  discard_legacy_cache(&settings.cache_dir)?;
   let log_path = logging::init(&settings.cache_dir)?;
   let temp_dir = gallery_temp_dir();
   tracing::info!(
@@ -111,7 +123,10 @@ async fn main() -> Result<()> {
   }
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
 
-  let mut tui = Tui::new()?;
+  framework_tui::install_panic_hook(|info, _| {
+    tracing::error!(thread = std::thread::current().name(), %info, "panic");
+  });
+  let mut tui = Tui::new(None)?;
   // Redraw only after something happened: every state change, render result,
   // and resize arrives as an event.
   loop {
@@ -183,7 +198,7 @@ fn render_store(settings: &config::Settings, capability: &TerminalCapability) ->
     );
     modes
   } else if render.auto_detect {
-    capability.preferred_render_modes(&render.zellij_sixel)
+    capability.preferred_render_modes(render.zellij_sixel.as_str())
   } else {
     vec![RenderMode::Symbols, RenderMode::Ascii]
   };
@@ -383,4 +398,33 @@ fn focus_index(images: &[ImageItem], focus: Option<&Path>) -> Result<usize> {
         focus.display()
       )
     })
+}
+
+/// Obsolete payloads are disposable; no import or eager regeneration.
+fn discard_legacy_cache(root: &std::path::Path) -> anyhow::Result<()> {
+  let marker = root.join("legacy-files-removed-v1");
+  if marker.exists() {
+    return Ok(());
+  }
+  match std::fs::remove_dir_all(root.join("svg")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  for entry in std::fs::read_dir(root)? {
+    let path = entry?.path();
+    if path
+      .extension()
+      .and_then(|v| v.to_str())
+      .is_some_and(|e| ["ansi", "used"].contains(&e))
+    {
+      match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+      }
+    }
+  }
+  framework_tui::fs::atomic_write_bytes(&marker, b"done")?;
+  Ok(())
 }

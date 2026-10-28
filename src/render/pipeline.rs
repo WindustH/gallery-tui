@@ -1,13 +1,8 @@
 //! One render job: try each render mode in order, reading the compressed
 //! memory and disk cache tiers before rendering from the source image.
 
-use std::{
-  path::{Path, PathBuf},
-  process::Command,
-  sync::Mutex,
-};
+use std::path::{Path, PathBuf};
 
-use ansi_to_tui::IntoText;
 use img_tui::{
   EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
   native_image,
@@ -20,9 +15,9 @@ use super::{
   RenderedImage,
   cache_file::{CacheHeader, RenderedBytes, decode_cache_file, encode_cache_file},
   keys::{kitty_image_id, render_cache_key},
-  lru::LruCache,
 };
-use crate::{cache, config::RenderConfig, fs_atomic};
+use crate::config::RenderConfig;
+use img_tui::cache::{MemoryCache as LruCache, paths as files};
 
 /// State shared by every render job of one `RenderStore`.
 pub(super) struct RenderContext {
@@ -30,7 +25,7 @@ pub(super) struct RenderContext {
   pub(super) config: RenderConfig,
   pub(super) native_config: NativeImageConfig,
   pub(super) modes: Vec<RenderMode>,
-  pub(super) compressed_memory: Mutex<LruCache<String, Vec<u8>>>,
+  pub(super) compressed_memory: LruCache<String, Vec<u8>>,
   pub(super) session_nonce: u32,
 }
 
@@ -38,26 +33,17 @@ type PreparedNative = Option<Result<native_image::PreparedNativeImage, String>>;
 
 impl RenderContext {
   pub(super) fn clear_compressed_memory(&self) {
-    if let Ok(mut cache) = self.compressed_memory.lock() {
-      cache.clear();
-    }
+    self.compressed_memory.clear();
   }
-
   fn compressed_get(&self, key: &str) -> Option<Vec<u8>> {
-    self.compressed_memory.lock().ok()?.get(key).cloned()
+    self.compressed_memory.get(key).map(|v| (*v).clone())
   }
-
   fn compressed_insert(&self, key: String, bytes: Vec<u8>) {
     let size = bytes.len() as u64;
-    if let Ok(mut cache) = self.compressed_memory.lock() {
-      cache.insert(key, bytes, size);
-    }
+    self.compressed_memory.insert(key, bytes, size);
   }
-
   fn compressed_remove(&self, key: &str) {
-    if let Ok(mut cache) = self.compressed_memory.lock() {
-      cache.remove(key);
-    }
+    self.compressed_memory.remove(key);
   }
 
   /// Render `image_path` into a `width` x `height` cell box, trying each
@@ -209,7 +195,7 @@ impl<'a> ModeJob<'a> {
 
   async fn read_disk(&self) -> Option<RenderedBytes> {
     let ctx = self.ctx;
-    let bytes = fs::read(&self.cache_path).await.ok()?;
+    let bytes = files::read(&self.cache_path).await.ok()?;
     let decoded = match decode_cache_file(&bytes, &self.header).await {
       Ok(decoded) => decoded,
       Err(error) => {
@@ -227,7 +213,7 @@ impl<'a> ModeJob<'a> {
       match self.encode(&decoded.payload).await {
         Ok(cached) => {
           ctx.compressed_insert(self.cache_key.clone(), cached.clone());
-          if let Err(error) = fs_atomic::write(&self.cache_path, cached).await {
+          if let Err(error) = files::write(&self.cache_path, &cached).await {
             warn!(
               cache = %self.cache_path.display(),
               %error,
@@ -246,7 +232,7 @@ impl<'a> ModeJob<'a> {
     } else {
       ctx.compressed_insert(self.cache_key.clone(), bytes);
     }
-    cache::touch_render_cache_entry(&self.cache_path).await;
+
     Some(decoded.payload)
   }
 
@@ -296,8 +282,8 @@ impl<'a> ModeJob<'a> {
     if !write_disk {
       return;
     }
-    match fs_atomic::write(&self.cache_path, cached).await {
-      Ok(()) => cache::touch_render_cache_entry(&self.cache_path).await,
+    match files::write(&self.cache_path, &cached).await {
+      Ok(()) => {}
       Err(error) => {
         warn!(
           cache = %self.cache_path.display(),
@@ -338,85 +324,23 @@ impl<'a> ModeJob<'a> {
   }
 }
 
-/// Chafa flags that gallery-tui controls itself; user copies are dropped.
-const CHAFA_MANAGED_FLAGS: [&str; 6] = [
-  "--format=",
-  "--colors=",
-  "--symbols=",
-  "--passthrough=",
-  "--probe=",
-  "--relative=",
-];
-
-fn chafa_args(config: &RenderConfig, mode: RenderMode, width: u16, height: u16) -> Vec<String> {
-  let mut args: Vec<String> = config
-    .chafa_args
-    .iter()
-    .filter(|arg| !CHAFA_MANAGED_FLAGS.iter().any(|flag| arg.starts_with(flag)))
-    .cloned()
-    .collect();
-
-  args.push(format!("--format={}", mode.chafa_format()));
-  args.push("--probe=off".to_string());
-  args.push("--relative=off".to_string());
-  args.push("--passthrough=none".to_string());
-  if !args.iter().any(|arg| arg.starts_with("--scale=")) {
-    args.push("--scale=max".to_string());
-  }
-  if config.chafa_threads > 0 && !args.iter().any(|arg| arg.starts_with("--threads=")) {
-    args.push(format!("--threads={}", config.chafa_threads));
-  }
-  match mode {
-    RenderMode::Symbols => args.extend(
-      config
-        .chafa_args
-        .iter()
-        .filter(|arg| arg.starts_with("--colors=") || arg.starts_with("--symbols="))
-        .cloned(),
-    ),
-    RenderMode::Ascii => {
-      args.push("--colors=none".to_string());
-      args.push("--symbols=ascii".to_string());
-    }
-    _ => {}
-  }
-  args.push("--size".to_string());
-  args.push(format!("{width}x{height}"));
-  args
-}
-
 async fn run_chafa(
   image_path: &Path,
   header: &CacheHeader,
   config: &RenderConfig,
 ) -> Result<Vec<u8>, String> {
-  let mode = header.mode;
-  if mode.is_protocol() {
-    return Err(format!(
-      "{} must be rendered by native image driver, not chafa",
-      mode.label()
-    ));
-  }
-
-  let mut command = Command::new(&config.chafa_bin);
-  command
-    .args(chafa_args(config, mode, header.width, header.height))
-    .arg(image_path);
-
-  let output = tokio::task::spawn_blocking(move || command.output())
-    .await
-    .map_err(|err| format!("chafa worker failed: {err}"))?
-    .map_err(|err| format!("failed to run {}: {err}", config.chafa_bin))?;
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    return Err(format!(
-      "{} exited with {}: {}",
-      config.chafa_bin,
-      output.status,
-      stderr.trim()
-    ));
-  }
-  Ok(output.stdout)
+  img_tui::chafa::run(
+    image_path,
+    header.width,
+    header.height,
+    &img_tui::chafa::ChafaConfig {
+      chafa_bin: &config.chafa_bin,
+      chafa_args: &config.chafa_args,
+      chafa_threads: config.chafa_threads,
+    },
+    header.mode,
+  )
+  .await
 }
 
 fn decode_rendered(
@@ -426,7 +350,7 @@ fn decode_rendered(
 ) -> Result<RenderedImage, String> {
   let mode = header.mode;
   if !mode.is_protocol() {
-    let text = bytes.data.into_text().map_err(|err| err.to_string())?;
+    let text = img_tui::chafa::decode(&bytes.data)?;
     let size = text
       .lines
       .iter()
@@ -454,37 +378,5 @@ fn protocol_spec(header: &CacheHeader) -> ProtocolImageSpec {
     image_id: header.image_id,
     placement_id: header.placement_id,
     ..ProtocolImageSpec::new(header.mode, header.width, header.height)
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn chafa_args_override_managed_flags() {
-    let config = RenderConfig {
-      chafa_args: vec![
-        "--colors=256".to_string(),
-        "--format=kitty".to_string(),
-        "--scale=2".to_string(),
-      ],
-      chafa_threads: 3,
-      ..RenderConfig::default()
-    };
-    let args = chafa_args(&config, RenderMode::Ascii, 10, 5);
-    assert!(!args.contains(&"--format=kitty".to_string()));
-    assert!(args.contains(&"--format=symbols".to_string()));
-    assert!(args.contains(&"--scale=2".to_string()));
-    assert!(!args.contains(&"--scale=max".to_string()));
-    assert!(args.contains(&"--threads=3".to_string()));
-    assert!(args.ends_with(&["--size".to_string(), "10x5".to_string()]));
-    assert_eq!(
-      args
-        .iter()
-        .filter(|arg| arg.starts_with("--colors="))
-        .count(),
-      1
-    );
   }
 }

@@ -18,7 +18,7 @@ pub struct RenderConfig {
   pub preload_ahead: usize,
   pub preload_behind: usize,
   pub passthrough: Option<String>,
-  pub zellij_sixel: String,
+  pub zellij_sixel: framework_tui::config::Toggle,
 }
 
 impl Default for RenderConfig {
@@ -43,7 +43,7 @@ impl Default for RenderConfig {
       preload_ahead: 6,
       preload_behind: 2,
       passthrough: None,
-      zellij_sixel: "off".to_string(),
+      zellij_sixel: framework_tui::config::Toggle::Off,
     }
   }
 }

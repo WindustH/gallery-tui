@@ -24,7 +24,11 @@ pub(super) fn render_cache_key(
   session_nonce: u32,
 ) -> String {
   let mut hasher = Sha256::new();
-  hasher.update(path.as_os_str().as_encoded_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(path)
+      .as_os_str()
+      .as_encoded_bytes(),
+  );
   if let Ok(metadata) = std::fs::metadata(path) {
     hasher.update(metadata.len().to_le_bytes());
     if let Ok(modified) = metadata.modified()
@@ -101,7 +105,11 @@ pub(super) fn kitty_image_id(
   }
   let mut hasher = Sha256::new();
   hasher.update(session_nonce.to_le_bytes());
-  hasher.update(path.as_os_str().as_encoded_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(path)
+      .as_os_str()
+      .as_encoded_bytes(),
+  );
   hasher.update(width.to_le_bytes());
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());

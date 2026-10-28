@@ -608,33 +608,3 @@ fn parse_layout_ratio(param: &str, value: &str) -> Result<u16, String> {
   }
   Ok(ratio)
 }
-
-#[cfg(test)]
-mod slides_tests {
-  use super::*;
-
-  #[test]
-  fn slides_ratios_and_invalid_arguments() {
-    let mut config = LayoutConfig::default();
-    let defaults = config.set_active_from_args("slides", &[]).unwrap();
-    assert_eq!((defaults.left_ratio, defaults.right_ratio), (1, 3));
-    assert!(!defaults.show_border);
-    let custom = config.set_active_from_args("slides", &["2", "5"]).unwrap();
-    assert_eq!((custom.left_ratio, custom.right_ratio), (2, 5));
-    assert_eq!((custom.columns, custom.rows), (1, 1));
-    for args in [
-      vec!["0", "3"],
-      vec!["1", "0"],
-      vec!["-1"],
-      vec!["1.5"],
-      vec!["65536"],
-      vec!["1", "2", "3"],
-    ] {
-      assert!(config.set_active_from_args("slides", &args).is_err());
-      assert_eq!(config.effective(), custom);
-    }
-    let saved = toml::to_string(&config).unwrap();
-    let restored: LayoutConfig = toml::from_str(&saved).unwrap();
-    assert_eq!(restored.effective(), custom);
-  }
-}

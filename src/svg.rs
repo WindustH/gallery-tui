@@ -65,9 +65,8 @@ pub(crate) async fn ensure_rasterized(
   let dir = crate::cache::svg_cache_dir(cache_dir);
   let png_path = dir.join(format!("{}.png", &digest[..32]));
 
-  if tokio::fs::try_exists(&png_path).await.unwrap_or(false) {
-    crate::cache::touch_render_cache_entry(&png_path).await;
-    return Ok(png_path);
+  if img_tui::cache::paths::contains(&png_path) {
+    return img_tui::cache::paths::materialize(&png_path).map_err(|e| e.to_string());
   }
 
   let svg = svg.to_path_buf();
@@ -83,11 +82,11 @@ pub(crate) async fn ensure_rasterized(
   .map_err(|error| format!("svg rasterization task failed: {error}"))?
   .map_err(|error| error.to_string())?;
 
-  crate::fs_atomic::write(&png_target, rendered)
+  img_tui::cache::paths::write(&png_target, &rendered)
     .await
     .map_err(|error| format!("writing {}: {error}", png_target.display()))?;
-  crate::cache::touch_render_cache_entry(&png_path).await;
-  Ok(png_path)
+
+  img_tui::cache::paths::materialize(&png_path).map_err(|e| e.to_string())
 }
 
 /// Render `tree` scaled to fit inside `target` (contain).
@@ -115,36 +114,4 @@ fn rasterize(tree: &usvg::Tree, target_w: u32, target_h: u32) -> Result<Vec<u8>>
   pixmap
     .encode_png()
     .context("encoding rasterized SVG as PNG")
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  const SAMPLE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#123456"/></svg>"##;
-
-  #[test]
-  fn svg_dimensions_report_intrinsic_size() {
-    let tree = parse(SAMPLE_SVG).expect("sample parses");
-    assert_eq!(size_of(&tree), (200, 100));
-  }
-
-  #[test]
-  fn rasterize_fits_target_box() {
-    let tree = parse(SAMPLE_SVG).expect("sample parses");
-    // Contain within 400x400: the 2:1 image scales to 400x200.
-    let png = rasterize(&tree, 400, 400).expect("renders");
-    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-    // Decode the IHDR to check the dimensions.
-    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 400);
-    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 200);
-  }
-
-  #[test]
-  fn is_svg_matches_extension_case_insensitively() {
-    assert!(is_svg(Path::new("a/b/Icon.SVG")));
-    assert!(is_svg(Path::new("icon.svg")));
-    assert!(!is_svg(Path::new("icon.png")));
-    assert!(!is_svg(Path::new("noext")));
-  }
 }

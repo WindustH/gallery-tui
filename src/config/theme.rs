@@ -1,3 +1,4 @@
+use framework_tui::theme::parse_color;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
@@ -100,49 +101,6 @@ fn default_hover_selected_background() -> String {
   "cyan".to_string()
 }
 
-fn parse_color(value: &str) -> Color {
-  let lower = value.trim().to_ascii_lowercase();
-  match lower.as_str() {
-    "reset" => Color::Reset,
-    "black" => Color::Black,
-    "red" => Color::Red,
-    "green" => Color::Green,
-    "yellow" => Color::Yellow,
-    "blue" => Color::Blue,
-    "magenta" => Color::Magenta,
-    "cyan" => Color::Cyan,
-    "gray" | "grey" => Color::Gray,
-    "dark_gray" | "dark_grey" | "darkgray" | "darkgrey" => Color::DarkGray,
-    "light_red" | "lightred" => Color::LightRed,
-    "light_green" | "lightgreen" => Color::LightGreen,
-    "light_yellow" | "lightyellow" => Color::LightYellow,
-    "light_blue" | "lightblue" => Color::LightBlue,
-    "light_magenta" | "lightmagenta" => Color::LightMagenta,
-    "light_cyan" | "lightcyan" => Color::LightCyan,
-    "white" => Color::White,
-    _ => {
-      if let Some(raw) = lower.strip_prefix("ansi:") {
-        return raw
-          .parse::<u8>()
-          .map(Color::Indexed)
-          .unwrap_or(Color::Reset);
-      }
-      // Only ASCII input can be sliced into byte pairs; anything else (such
-      // as "#aébcd", also 7 bytes long) is not a hex color.
-      if let Some(hex) = lower.strip_prefix('#')
-        && hex.len() == 6
-        && hex.is_ascii()
-      {
-        let channel = |range| u8::from_str_radix(&hex[range], 16);
-        if let (Ok(r), Ok(g), Ok(b)) = (channel(0..2), channel(2..4), channel(4..6)) {
-          return Color::Rgb(r, g, b);
-        }
-      }
-      Color::Reset
-    }
-  }
-}
-
 fn auto_foreground_for(background: &str) -> Color {
   color_luminance(parse_color(background))
     .map(|luminance| {
@@ -224,30 +182,4 @@ fn color_cube_component(value: u8) -> u8 {
 
 fn rgb_luminance(r: u8, g: u8, b: u8) -> f32 {
   (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn parse_color_reads_names_indexes_and_hex() {
-    assert_eq!(parse_color(" Light_Cyan "), Color::LightCyan);
-    assert_eq!(parse_color("ansi:236"), Color::Indexed(236));
-    assert_eq!(parse_color("#FFaa00"), Color::Rgb(255, 170, 0));
-    assert_eq!(parse_color("nonsense"), Color::Reset);
-  }
-
-  #[test]
-  fn parse_color_rejects_non_ascii_hex_without_panicking() {
-    assert_eq!(parse_color("#aébcd"), Color::Reset);
-    assert_eq!(parse_color("#ééé"), Color::Reset);
-  }
-
-  #[test]
-  fn auto_foreground_contrasts_with_background() {
-    assert_eq!(auto_foreground_for("white"), Color::Black);
-    assert_eq!(auto_foreground_for("ansi:17"), Color::White);
-    assert_eq!(auto_foreground_for("reset"), Color::Reset);
-  }
 }

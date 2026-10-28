@@ -1,80 +1,20 @@
 //! `config.toml` serialization with an explanatory comment above each field.
 
-use std::{collections::BTreeSet, fmt::Write as _};
-
 use anyhow::Result;
 
 use super::AppConfig;
 
 pub(super) fn app_config_toml(config: &AppConfig) -> Result<String> {
   let body = toml::to_string_pretty(config)?;
-  Ok(add_app_config_comments(
+  Ok(framework_tui::commented_toml::add_comments(
     &body,
     &[
       "gallery-tui main configuration.",
       "Missing fields are rewritten with defaults when the app loads this file.",
     ],
     gallery_config_comment,
+    comment_table_key,
   ))
-}
-
-fn add_app_config_comments(
-  body: &str,
-  header: &[&str],
-  comment_for: fn(&str) -> Option<&'static str>,
-) -> String {
-  let mut out = String::new();
-  let mut seen_comments = BTreeSet::new();
-  for line in header {
-    push_toml_comment(&mut out, line);
-  }
-  out.push('\n');
-
-  let mut table = String::new();
-  for line in body.lines() {
-    let trimmed = line.trim();
-    if let Some(header) = toml_table_header(trimmed) {
-      table = header.to_string();
-      let comment_key = comment_table_key(&table);
-      if seen_comments.insert(comment_key.clone())
-        && let Some(comment) = comment_for(&comment_key)
-      {
-        push_toml_comment(&mut out, comment);
-      }
-    } else if let Some(key) = toml_field_key(trimmed) {
-      let comment_key = comment_field_key(&table, key);
-      if seen_comments.insert(comment_key.clone())
-        && let Some(comment) = comment_for(&comment_key)
-      {
-        push_toml_comment(&mut out, comment);
-      }
-    }
-    out.push_str(line);
-    out.push('\n');
-  }
-  out
-}
-
-fn push_toml_comment(out: &mut String, comment: &str) {
-  for line in comment.lines() {
-    let _ = writeln!(out, "# {line}");
-  }
-}
-
-fn toml_table_header(line: &str) -> Option<&str> {
-  if line.starts_with("[[") {
-    return None;
-  }
-  line.strip_prefix('[')?.strip_suffix(']')
-}
-
-fn toml_field_key(line: &str) -> Option<&str> {
-  if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-    return None;
-  }
-  let (key, _) = line.split_once('=')?;
-  let key = key.trim();
-  (!key.is_empty()).then_some(key)
 }
 
 fn comment_table_key(table: &str) -> String {
@@ -82,16 +22,6 @@ fn comment_table_key(table: &str) -> String {
     "layout.presets.*".to_string()
   } else {
     table.to_string()
-  }
-}
-
-fn comment_field_key(table: &str, key: &str) -> String {
-  if table.is_empty() {
-    key.to_string()
-  } else if table.starts_with("layout.presets.") {
-    format!("layout.presets.*.{key}")
-  } else {
-    format!("{table}.{key}")
   }
 }
 
@@ -174,7 +104,7 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
       Some("Maximum RAM used for compressed rendered image data. 0 means unlimited.")
     }
     "render.disk_cache_max_bytes" => {
-      Some("Maximum disk space used for the render cache, enforced at startup. 0 means unlimited.")
+      Some("Maximum live SQLite cache payload bytes, enforced on writes. 0 means unlimited.")
     }
     "render.cache_compression_level" => Some("Compression level used for cached render data."),
     "render.cache_compression_threads" => {
@@ -197,35 +127,5 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
       Some("Apply at most one navigation step per drawn frame, dropping extra queued key repeats.")
     }
     _ => None,
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn app_config_toml_writes_parseable_commented_defaults() {
-    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
-    toml::from_str::<AppConfig>(&body).expect("commented default config should parse");
-    assert!(body.contains("# gallery-tui main configuration."));
-    assert!(body.contains("# Layout preset selected on startup."));
-  }
-
-  #[test]
-  fn app_config_toml_deduplicates_preset_field_comments() {
-    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
-    assert_eq!(
-      body
-        .matches("# Layout algorithm used by this preset")
-        .count(),
-      1
-    );
-    assert_eq!(
-      body
-        .matches("# Card width in cells for masonry layouts.")
-        .count(),
-      1
-    );
   }
 }

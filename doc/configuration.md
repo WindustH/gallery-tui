@@ -133,7 +133,7 @@ as `3x3` also works.
 | `disk_cache_max_bytes` | `536870912` (512 MiB) | Disk space for the render cache, enforced at startup |
 | `cache_compression_level` | `3` | zstd level for cached renders |
 | `cache_compression_threads` | `2` | zstd worker threads; `0` compresses on the calling thread |
-| `zellij_sixel` | `"off"` | Sixel inside Zellij: `off`, `auto`, or `on` (see [Terminal Graphics](terminal-graphics.md#zellij)) |
+| `zellij_sixel` | `false` | Sixel inside Zellij: `off`, `auto`, or `on` (see [Terminal Graphics](terminal-graphics.md#zellij)) |
 
 The default `chafa_args` are `--format=symbols`, `--colors=full`,
 `--symbols=block`, `--animate=off`, and `--polite=on`. gallery-tui always sets
@@ -162,3 +162,7 @@ automatically.
 | `GALLERY_TUI_TMPDIR` | Directory for temporary files such as editor drafts |
 | `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` | Base config and cache directories on Linux and macOS |
 | `VISUAL`, `EDITOR` | Editor for `ctrl-g` and metadata editing; `VISUAL` is tried first, then `EDITOR`, then `vi` (`notepad` on Windows) |
+
+Shared rendering settings accept `zellij_sixel = true`, `false`, or `"auto"`.
+Legacy `"on"`/`"off"` values remain readable. `render.disk_cache_max_bytes`
+is the canonical disk budget; `cache_max_bytes` remains a read alias.

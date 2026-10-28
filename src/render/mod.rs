@@ -7,14 +7,13 @@
 
 mod cache_file;
 mod keys;
-mod lru;
 mod pipeline;
 
 use std::{
   collections::HashMap,
   path::PathBuf,
   sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
   },
 };
@@ -23,8 +22,8 @@ use img_tui::{NativeImageConfig, ProtocolImage, RenderMode};
 use ratatui::widgets::Paragraph;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
-use crate::{config::RenderConfig, event::AsyncEvent, model::ImageItem};
-use lru::LruCache;
+use crate::{config::RenderConfig, model::ImageItem};
+use img_tui::cache::MemoryCache as LruCache;
 use pipeline::RenderContext;
 
 /// A finished render ready to be drawn.
@@ -104,6 +103,7 @@ const STALE_AFTER_FRAMES: u64 = 2;
 pub struct RenderStore {
   context: Arc<RenderContext>,
   memory: LruCache<RenderKey, RenderedImage>,
+  current: Option<Arc<RenderedImage>>,
   failures: HashMap<RenderKey, String>,
   /// Jobs in progress, with the last frame that asked for each.
   in_flight: HashMap<RenderKey, Arc<AtomicU64>>,
@@ -122,7 +122,7 @@ impl RenderStore {
   ) -> Self {
     let max_concurrent = config.max_concurrent.max(1);
     let memory = LruCache::new(config.raw_memory_cache_max_bytes);
-    let compressed_memory = Mutex::new(LruCache::new(config.compressed_memory_cache_max_bytes));
+    let compressed_memory = LruCache::new(config.compressed_memory_cache_max_bytes);
     Self {
       context: Arc::new(RenderContext {
         cache_dir,
@@ -133,6 +133,7 @@ impl RenderStore {
         session_nonce: keys::render_session_nonce(),
       }),
       memory,
+      current: None,
       failures: HashMap::new(),
       in_flight: HashMap::new(),
       frame: Arc::new(AtomicU64::new(0)),
@@ -150,22 +151,20 @@ impl RenderStore {
 
   /// Look up the render of `item` at `width` x `height`, starting a job when
   /// it is neither cached, failed, nor already in progress.
-  pub fn request(
+  pub fn request<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     item: &ImageItem,
     width: u16,
     height: u16,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> RenderState<'_> {
     if width == 0 || height == 0 {
       return RenderState::Pending;
     }
     let key = RenderKey::new(item, width, height);
-    if self.memory.touch(&key) {
-      return self
-        .memory
-        .peek(&key)
-        .map_or(RenderState::Pending, RenderState::Ready);
+    self.current = self.memory.get(&key);
+    if self.current.is_some() {
+      return RenderState::Ready(self.current.as_deref().unwrap());
     }
     if self.failures.contains_key(&key) {
       return self
@@ -181,12 +180,12 @@ impl RenderStore {
 
   /// Start a background render for an image near the focus, but only when a
   /// worker slot is free right now.
-  pub fn preload(
+  pub fn preload<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     item: &ImageItem,
     width: u16,
     height: u16,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     if width == 0 || height == 0 {
       return;
@@ -227,6 +226,7 @@ impl RenderStore {
   }
 
   pub fn clear_memory_caches(&mut self) {
+    self.current = None;
     self.memory.clear();
     self.context.clear_compressed_memory();
     self.forget_failures();
@@ -257,10 +257,10 @@ impl RenderStore {
     true
   }
 
-  fn spawn(
+  fn spawn<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     key: RenderKey,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
     permits: Option<RenderPermits>,
   ) {
     let requested = Arc::new(AtomicU64::new(self.frame.load(Ordering::Relaxed)));
@@ -300,7 +300,7 @@ impl RenderStore {
         Ok(result) => result,
         Err(error) => Err(RenderFailure::Error(format!("render task failed: {error}"))),
       };
-      let _ = tx.send(AsyncEvent::Render(RenderOutcome { key, result }));
+      let _ = tx.send(E::from(RenderOutcome { key, result }));
     });
   }
 }

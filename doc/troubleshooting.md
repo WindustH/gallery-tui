@@ -25,7 +25,7 @@ GALLERY_TUI_RENDER_MODES=symbols gallery-tui ~/Pictures
 ```
 
 or set `render.auto_detect = false` in `config.toml`. Under Zellij, keep
-`render.zellij_sixel = "off"` unless Sixel is known to work.
+`render.zellij_sixel = false` unless Sixel is known to work.
 
 ## Images Are Cut Off or Do Not Fill Their Cards
 

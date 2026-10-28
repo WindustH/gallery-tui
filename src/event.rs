@@ -57,3 +57,9 @@ pub struct MetadataWriteOutcome {
   pub edit: MetadataEdit,
   pub rename_applied: bool,
 }
+
+impl From<RenderOutcome> for AsyncEvent {
+  fn from(value: RenderOutcome) -> Self {
+    Self::Render(value)
+  }
+}

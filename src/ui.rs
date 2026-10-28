@@ -490,31 +490,34 @@ fn split_image_label_len(total: u16, image_ratio: f32) -> (u16, u16) {
 }
 
 fn wrap_for_area(value: &str, width: usize, height: usize) -> String {
+  use framework_tui::text::{display_width, truncate_to_width};
   if width == 0 || height == 0 {
     return String::new();
   }
   let mut lines = Vec::new();
   let mut line = String::new();
-  for ch in value.chars() {
-    if line.chars().count() >= width {
-      lines.push(line);
-      line = String::new();
-      if lines.len() >= height {
-        break;
+  let mut used = 0;
+  for (index, ch) in value.char_indices() {
+    let columns = display_width(ch.encode_utf8(&mut [0; 4]));
+    if ch == '\n' || used + columns > width {
+      if lines.len() + 1 == height {
+        line.push_str(&value[index..].replace('\n', " "));
+        lines.push(truncate_to_width(&line, width).into_owned());
+        return lines.join("\n");
+      }
+      lines.push(std::mem::take(&mut line));
+      used = 0;
+      if ch == '\n' {
+        continue;
       }
     }
-    line.push(ch);
+    if columns <= width {
+      line.push(ch);
+      used += columns;
+    }
   }
-  if lines.len() < height && !line.is_empty() {
+  if !line.is_empty() {
     lines.push(line);
-  }
-  if lines.len() > height {
-    lines.truncate(height);
-  }
-  if let Some(last) = lines.last_mut()
-    && value.chars().count() > width.saturating_mul(height)
-  {
-    *last = truncate_for_width(last, width);
   }
   lines.join("\n")
 }
@@ -539,21 +542,7 @@ fn format_time(value: Option<SystemTime>) -> String {
 }
 
 fn truncate_for_width(value: &str, width: usize) -> String {
-  if width == 0 {
-    return String::new();
-  }
-  if width <= 3 {
-    return value.chars().take(width).collect();
-  }
-  let mut out = String::new();
-  for ch in value.chars() {
-    if out.chars().count() + 1 >= width {
-      out.push_str("...");
-      return out;
-    }
-    out.push(ch);
-  }
-  out
+  framework_tui::text::truncate_to_width(value, width).into_owned()
 }
 
 fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {

@@ -21,7 +21,7 @@ impl Default for KeymapConfig {
       browser: KeymapSection {
         keymap: vec![
           key(
-            [",", "p"],
+            ["v", "p"],
             "layout slides 1 5",
             "Use slides layout with 1:5 panels",
           ),

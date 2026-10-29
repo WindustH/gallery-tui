@@ -170,7 +170,7 @@ pub fn screen_rect(card: CanvasRect, viewport: Rect, scroll: u32) -> Option<Rect
   let visible_top = top.max(viewport_top);
   let visible_bottom = bottom.min(viewport_bottom);
   let visible_height = visible_bottom.saturating_sub(visible_top);
-  if visible_height == 0 {
+  if visible_height == 0 || card.width == 0 || card.x >= viewport.width {
     return None;
   }
 

@@ -283,6 +283,11 @@ fn handle_async_event(
   match message {
     AsyncEvent::Input { event, generation } => {
       if input.is_current(generation) {
+        if matches!(event, crossterm::event::Event::Resize(..)) {
+          let pixels = capability::current_cell_pixels();
+          app.terminal_cell_pixels = pixels;
+          renderer.set_cell_pixels(pixels);
+        }
         app.handle_input(event, tx)
       } else {
         InputEffect::None
@@ -315,7 +320,7 @@ fn handle_async_event(
       InputEffect::Other
     }
     AsyncEvent::ConfigSave(outcome) => {
-      app.finish_config_save(outcome);
+      app.finish_config_save(outcome, tx);
       InputEffect::Other
     }
     AsyncEvent::MetadataWrite(outcome) => {

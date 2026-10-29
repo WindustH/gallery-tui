@@ -55,6 +55,7 @@ preset and holds card settings that presets can override.
 | `image_ratio` | `0.75` | Share of the card given to the image when a filename is shown, `0.1` to `0.95` |
 | `label_lines` | `0` | Filename lines for `top`/`bottom` labels; `0` sizes the label from `image_ratio` |
 | `show_border` | `true` | Draw a border around each card |
+| `highlight` | `true` | Show focus and selection styling on cards |
 | `padding` | `1` | Space between the card edge (inside the border) and its content |
 
 `:layout` rewrites `active` and `active_args`; `:layout-use` changes the layout
@@ -111,7 +112,7 @@ rows = 1
 | `items` | List items per screen |
 | `card_width` | Masonry card width in cells |
 | `card_height` | Masonry card height for images whose size is unknown |
-| `gap_x`, `gap_y`, `card_style`, `show_filename`, `filename_position`, `image_alignment`, `image_ratio`, `label_lines`, `show_border`, `padding` | Optional overrides of the `[layout]` fields |
+| `gap_x`, `gap_y`, `card_style`, `show_filename`, `filename_position`, `image_alignment`, `image_ratio`, `label_lines`, `show_border`, `highlight`, `padding` | Optional overrides of the `[layout]` fields |
 
 `params` may name any field in this table except `strategy` and `params`.
 Numbers must be whole and non-negative, `image_ratio` takes a decimal, and
@@ -206,7 +207,7 @@ primary. Each reference's `args` uses that preset's normal argument order.
 Nested compositions are rejected.
 
 The built-in `slides` is this mechanism's preset, using `slides-sidebar` and
-`slides-main`. Configure these **leaf presets** to change borders, labels, or
+`slides-main`. Configure these **leaf presets** to change highlighting, borders, labels, or
 image layout; configure `layout.presets.slides.composition` to change the
 split. Old `strategy = "slides"` presets remain accepted as compatibility
 aliases, but new presets should use `strategy = "composite"`.
@@ -222,8 +223,30 @@ Follower preloading predicts the primary's navigation path before mapping each
 predicted position to follower slices.
 
 The built-in `browse_with_preview` is another `composite` preset: `first`
-references `grid` with `args = ["3", "5"]`, `second` references `grid` with
-`args = ["1", "1"]`, and its split uses `ratio = [2, 3]`, `gap = 1`, and
+references `grid` with `args = ["3", "5"]`, `second` references the `browse-preview`
+preset (`grid`, one column and one row), and its split uses `ratio = [2, 3]`, `gap = 1`, and
 `primary = "first"`. Activate it with `. b` or `:layout browse_with_preview`.
-Both panels inherit the ordinary `grid` preset's styling; the one-image
-preview uses neutral focus/selection colors.
+The two leaf presets can be styled independently.
+
+`highlight` defaults to `true` under `[layout]`. An ordinary preset can override
+it; a composition uses the setting on each referenced leaf preset. The built-in
+`slides-main` and `browse-preview` explicitly default to `false`. A single-image
+grid is otherwise treated like any other grid: there is no automatic disabling.
+For example, edit these existing tables in `config.toml`:
+
+```toml
+[layout.presets.slides-main]
+highlight = true
+
+[layout.presets.browse-preview]
+highlight = false
+
+[layout.presets.grid]
+highlight = false
+```
+
+Disabling highlighting suppresses focus/selection colors and the focused page
+number marker; navigation and the selected-image set are unchanged. Add
+`"highlight"` to a custom preset's `params` to accept it as a `:layout` argument.
+Existing unmodified `browse_with_preview` compositions are upgraded to reference
+`browse-preview`; customized compositions keep their panel references.

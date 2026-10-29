@@ -86,6 +86,7 @@ impl RenderKey {
 
 #[derive(Debug)]
 pub struct RenderOutcome {
+  session_nonce: u32,
   preload: bool,
   key: RenderKey,
   result: Result<RenderedImage, RenderFailure>,
@@ -177,6 +178,20 @@ impl RenderStore {
 
   /// Mark the start of a UI frame. Queued jobs that no frame asks for any
   /// more are skipped instead of rendered.
+  pub fn set_cell_pixels(&mut self, pixels: Option<(u16, u16)>) {
+    if self.context.native_config.cell_pixels == pixels {
+      return;
+    }
+    let mut native = self.context.native_config.clone();
+    native.cell_pixels = pixels;
+    *self = Self::new(
+      self.context.cache_dir.clone(),
+      self.context.config.clone(),
+      native,
+      self.context.modes.clone(),
+    );
+  }
+
   pub fn begin_frame(&mut self) {
     self.frame.fetch_add(1, Ordering::Relaxed);
   }
@@ -270,6 +285,9 @@ impl RenderStore {
 
   /// Apply a finished job. Returns a status message for failures.
   pub fn finish(&mut self, outcome: RenderOutcome) -> (bool, Option<String>) {
+    if outcome.session_nonce != self.context.session_nonce {
+      return (false, None);
+    }
     let waiting = self.visible_waits.remove(&outcome.key);
     let visible = !outcome.preload || waiting;
     self.in_flight.remove(&outcome.key);
@@ -346,6 +364,7 @@ impl RenderStore {
     self.in_flight.insert(key.clone(), requested.clone());
 
     let context = self.context.clone();
+    let session_nonce = context.session_nonce;
     let current_frame = self.frame.clone();
     let semaphore = self.semaphore.clone();
     let tx = tx.clone();
@@ -380,6 +399,7 @@ impl RenderStore {
         Err(error) => Err(RenderFailure::Error(format!("render task failed: {error}"))),
       };
       let _ = tx.send(E::from(RenderOutcome {
+        session_nonce,
         key,
         result,
         preload,

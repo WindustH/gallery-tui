@@ -89,7 +89,15 @@ impl App {
     }
   }
 
-  pub fn finish_config_save(&mut self, outcome: ConfigSaveOutcome) {
+  pub fn finish_config_save(
+    &mut self,
+    outcome: ConfigSaveOutcome,
+    tx: &tokio::sync::mpsc::UnboundedSender<crate::event::AsyncEvent>,
+  ) {
+    self.config_save_pending = false;
+    if let Some(message) = self.config_save_queued.take() {
+      self.request_config_save(message, tx);
+    }
     match outcome.result {
       Ok(message) => {
         self.set_message(message);

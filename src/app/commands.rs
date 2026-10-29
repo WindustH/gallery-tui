@@ -125,7 +125,7 @@ impl App {
       .set_active_from_args(name, &args[1..])
     {
       Ok(layout) => {
-        self.last_layout = None;
+        self.invalidate_layout();
         let label = layout.label();
         if persist {
           self.set_message(format!("layout: {label} (saving)"));
@@ -145,7 +145,16 @@ impl App {
     self.execute_command(command, tx);
   }
 
-  fn request_config_save(&self, success_message: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  pub(super) fn request_config_save(
+    &mut self,
+    success_message: String,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) {
+    if self.config_save_pending {
+      self.config_save_queued = Some(success_message);
+      return;
+    }
+    self.config_save_pending = true;
     let path = self.settings.config_path.clone();
     let config = self.settings.config.clone();
     let tx = tx.clone();

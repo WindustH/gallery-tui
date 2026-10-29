@@ -74,6 +74,13 @@ is 8 and applies only to masonry panels (including the slides sidebar).
 
 Preload completion alone does not redraw the screen. A preload requested by the visible viewport is promoted for display, and speculative failures have a five-second cooldown without becoming persistent visible errors. Both whole-image and sliced native rendering share prepared images and use the same cell-to-pixel scaling. Browser geometry is reused until its image list, configuration, terminal cell size, or viewport changes.
 
-Command prompts, completion lists, status messages, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Permanent navigation (the music tab bar and Calibre search header) keeps its existing position.
-Kitty Unicode images are occluded through text cells without changing image geometry. Pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.
+Temporary command prompts, completion lists, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Status messages update the reserved footer. Permanent chrome reserves space outside the viewport: the gallery/PDF status row and the music tab bar and three footer rows. Only transient surfaces cover content.
+Kitty Unicode images are occluded through text cells without changing image geometry. Regular Kitty placements are cropped around overlay rectangles without decoding the image again. Other pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.
 A composite panel displaying a single grid image uses neutral card colors; the sidebar retains focus/selection markers.
+
+Layout changes discard placements from the previous layout, including the slides main preview. Pending renders may retain images only within the current layout; they cannot re-enable preservation across a layout change.
+
+On resize, cell pixel dimensions are refreshed from the terminal window size
+without sending an input-consuming terminal query. If pixel dimensions are
+unavailable, rendering uses its fallback cell size. Layout and render keys
+change with the refreshed dimensions.

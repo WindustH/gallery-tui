@@ -166,7 +166,7 @@ fn editable_metadata_map(entries: &[ImageMetadataEntry]) -> BTreeMap<String, Str
 }
 
 fn exiftool_tag_name(key: &str) -> Result<String, String> {
-  let tag = key.rsplit('.').next().unwrap_or(key).trim();
+  let tag = key.trim().replace('.', ":");
   if tag.is_empty()
     || !tag
       .chars()
@@ -174,7 +174,7 @@ fn exiftool_tag_name(key: &str) -> Result<String, String> {
   {
     return Err(format!("unsupported metadata tag name: {key}"));
   }
-  Ok(tag.to_string())
+  Ok(tag)
 }
 
 fn toml_key(value: &str) -> String {

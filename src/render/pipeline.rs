@@ -61,8 +61,8 @@ impl RenderContext {
   pub(super) fn clear_compressed_memory(&self) {
     self.compressed_memory.clear();
   }
-  fn compressed_get(&self, key: &str) -> Option<Vec<u8>> {
-    self.compressed_memory.get(key).map(|v| (*v).clone())
+  fn compressed_get(&self, key: &str) -> Option<Arc<Vec<u8>>> {
+    self.compressed_memory.get(key)
   }
   fn compressed_insert(&self, key: String, bytes: Vec<u8>) {
     let size = bytes.len() as u64;
@@ -192,10 +192,22 @@ impl<'a> ModeJob<'a> {
   async fn run(self, prepared_native: &mut PreparedNative) -> Result<RenderedImage, String> {
     let ctx = self.ctx;
     if let Some(bytes) = self.read_compressed_memory().await {
-      return decode_rendered(bytes, &self.header, &ctx.native_config);
+      match decode_rendered(bytes, &self.header, &ctx.native_config) {
+        Ok(image) => return Ok(image),
+        Err(error) => {
+          debug!(%error, "ignoring invalid cached protocol image");
+          ctx.compressed_remove(&self.cache_key);
+        }
+      }
     }
     if let Some(bytes) = self.read_disk().await {
-      return decode_rendered(bytes, &self.header, &ctx.native_config);
+      match decode_rendered(bytes, &self.header, &ctx.native_config) {
+        Ok(image) => return Ok(image),
+        Err(error) => {
+          debug!(%error, "ignoring invalid cached protocol image");
+          ctx.compressed_remove(&self.cache_key);
+        }
+      }
     }
 
     debug!(

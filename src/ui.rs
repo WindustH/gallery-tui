@@ -40,7 +40,13 @@ pub fn draw(
   let mut cursor_position = None;
   let area = frame.area();
   let footer_height = footer_height(app, area.width).min(area.height);
-  let main = area;
+  // Permanent chrome reserves space; transient footer rows float over it.
+  let main = Rect {
+    height: area.height.saturating_sub(u16::from(
+      app.view != ViewMode::Detail || app.detail_page != DetailPage::Image,
+    )),
+    ..area
+  };
   let footer = Rect::new(
     area.x,
     area.bottom().saturating_sub(footer_height),
@@ -102,10 +108,6 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
     .as_ref()
     .map_or(area, |c| c.split.areas(area)[c.split.primary.index()]);
   let layout_changed = app.prepare_browser_layout(&layout_config, primary_area);
-  if layout_changed {
-    images.preserve_overlays = false;
-    images.preserve_areas.clear();
-  }
   if let Some(layout) = app.browser_layout() {
     draw_browser_panel(
       frame,
@@ -142,6 +144,14 @@ fn draw_browser(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area
     }
   } else {
     app.follower = None;
+  }
+  // Pending draws request preservation while their replacements render.
+  // Apply the layout boundary AFTER both panels draw; doing this beforehand
+  // lets Pending re-enable preservation and retain the previous main image
+  // inside a larger card of the new layout.
+  if layout_changed {
+    images.preserve_overlays = false;
+    images.preserve_areas.clear();
   }
   // Both panes enqueue their visible images before speculative work starts.
   if let Some(layout) = app.browser_layout() {
@@ -249,12 +259,8 @@ fn draw_card(
 ) {
   let layout_config = panel.config;
   let theme = &app.settings.theme;
-  let plain_preview = (panel.following || layout_config.composition.is_some())
-    && layout_config.strategy == "grid"
-    && layout_config.columns == 1
-    && layout_config.rows == 1;
-  let focused = !plain_preview && card.index == app.focused;
-  let selected = !plain_preview && app.selected.contains(&item.path);
+  let focused = layout_config.highlight && card.index == app.focused;
+  let selected = layout_config.highlight && app.selected.contains(&item.path);
   let (foreground, background) = card_state_colors(theme, focused, selected);
   let style = Style::default().fg(foreground).bg(background);
   // Compute content against the full card; clip only its final placement.
@@ -425,7 +431,10 @@ fn draw_detail(frame: &mut Frame, app: &mut App, images: &mut FrameImages, area:
     DetailPage::Metadata => {
       let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(area.width.min(42)), Constraint::Min(20)])
+        .constraints([
+          Constraint::Length(if area.width < 62 { 0 } else { 42 }),
+          Constraint::Min(20),
+        ])
         .split(area);
       let preview = safe_inner(split[0], 1, 1);
       frame.render_widget(
@@ -468,9 +477,14 @@ fn preload_browser_neighbors(app: &App, images: &mut FrameImages, panel: Browser
   let render = &app.settings.config.render;
   let alignment = image_alignment_for_layout(layout_config);
   if layout_config.strategy != "masonry" {
-    let start = app.focused.saturating_sub(render.preload_behind);
-    let end = app
-      .focused
+    let visible = layout.visible_indices(scroll, area.height);
+    if visible.is_empty() {
+      return;
+    }
+    let first = visible.start;
+    let last = visible.end - 1;
+    let start = first.saturating_sub(render.preload_behind);
+    let end = last
       .saturating_add(render.preload_ahead)
       .min(app.images.len().saturating_sub(1));
     for index in start..=end {
@@ -562,10 +576,10 @@ fn preload_detail_neighbors(app: &App, images: &mut FrameImages, image_area: Rec
     return;
   }
   let render = &app.settings.config.render;
-  let start = app.focused.saturating_sub(render.preload_behind.min(1));
+  let start = app.focused.saturating_sub(render.preload_behind);
   let end = app
     .focused
-    .saturating_add(render.preload_ahead.min(2))
+    .saturating_add(render.preload_ahead)
     .min(app.images.len() - 1);
   for index in (start..=end).filter(|index| *index != app.focused) {
     if let Some(item) = app.images.get(index) {

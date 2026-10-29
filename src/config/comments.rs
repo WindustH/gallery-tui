@@ -31,6 +31,10 @@ fn comment_table_key(table: &str) -> String {
 
 fn gallery_config_comment(key: &str) -> Option<&'static str> {
   match key {
+    "layout.highlight" => Some("Show focus and selection styling on image cards by default."),
+    "layout.presets.*.highlight" => Some(
+      "Override card highlighting for this layout/panel; false keeps neutral colors without changing selection.",
+    ),
     "layout.show_page_numbers" | "layout.presets.*.show_page_numbers" => {
       Some("Show a one-based item number above each page/image; independent of borders.")
     }

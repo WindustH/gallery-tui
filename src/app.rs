@@ -89,6 +89,8 @@ pub struct App {
   /// the image list or its metadata changes.
   metadata_fields: Option<Vec<String>>,
   quit: bool,
+  config_save_pending: bool,
+  config_save_queued: Option<String>,
   stdout_paths: Option<Vec<PathBuf>>,
   editor_request: Option<EditorRequest>,
   command_state: CommandState,
@@ -129,6 +131,8 @@ impl App {
       detail_back_quits: false,
       metadata_fields: None,
       quit: false,
+      config_save_pending: false,
+      config_save_queued: None,
       stdout_paths: None,
       editor_request: None,
       command_state: CommandState::default(),
@@ -137,7 +141,7 @@ impl App {
   }
 
   pub fn should_quit(&self) -> bool {
-    self.quit
+    self.quit && !self.config_save_pending
   }
 
   pub fn request_quit(&mut self) {

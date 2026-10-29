@@ -25,6 +25,8 @@ pub struct LayoutConfig {
   #[serde(default = "default_show_filename")]
   pub show_filename: bool,
   pub show_page_numbers: bool,
+  /// Show focus/selection styling on cards; independent of selection state.
+  pub highlight: bool,
   #[serde(default = "default_filename_position")]
   pub filename_position: String,
   #[serde(default = "default_image_alignment")]
@@ -52,6 +54,7 @@ impl Default for LayoutConfig {
       card_style: default_card_style(),
       show_filename: default_show_filename(),
       show_page_numbers: false,
+      highlight: true,
       filename_position: default_filename_position(),
       image_alignment: default_image_alignment(),
       image_ratio: default_image_ratio(),
@@ -69,6 +72,7 @@ pub struct LayoutPresetConfig {
   pub composition: Option<Composition>,
   pub scroll_divisor: Option<u16>,
   pub show_page_numbers: Option<bool>,
+  pub highlight: Option<bool>,
   #[serde(default = "default_layout_strategy")]
   pub strategy: String,
   pub left_ratio: u16,
@@ -158,6 +162,7 @@ impl Default for LayoutPresetConfig {
       composition: None,
       scroll_divisor: None,
       show_page_numbers: None,
+      highlight: None,
       strategy: default_layout_strategy(),
       left_ratio: 1,
       right_ratio: 3,
@@ -230,7 +235,7 @@ fn default_padding() -> u16 {
 }
 
 fn default_layout_strategy() -> String {
-  "grid".to_string()
+  String::new()
 }
 
 fn default_card_width() -> u16 {
@@ -253,7 +258,7 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
         ratio: [2, 3],
         primary: PrimaryPanel::First,
         first: LayoutReference::new("grid", &["3", "5"]),
-        second: LayoutReference::new("grid", &["1", "1"]),
+        second: LayoutReference::new("browse-preview", &[]),
         ..Composition::default()
       }),
       ..LayoutPresetConfig::default()
@@ -276,6 +281,16 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
       rows: 1,
       padding: Some(0),
       show_filename: Some(false),
+      highlight: Some(false),
+      ..LayoutPresetConfig::grid()
+    },
+  );
+  presets.insert(
+    "browse-preview".into(),
+    LayoutPresetConfig {
+      columns: 1,
+      rows: 1,
+      highlight: Some(false),
       ..LayoutPresetConfig::grid()
     },
   );
@@ -303,6 +318,8 @@ pub struct EffectiveLayoutConfig {
   pub card_style: String,
   pub show_filename: bool,
   pub show_page_numbers: bool,
+  /// Show focus/selection styling on cards; independent of selection state.
+  pub highlight: bool,
   pub filename_position: String,
   pub image_alignment: String,
   pub image_ratio: f32,
@@ -340,6 +357,22 @@ impl EffectiveLayoutConfig {
 impl LayoutConfig {
   /// Add built-in presets missing from the file and fill their unset fields.
   pub(super) fn normalize_defaults(&mut self) {
+    // Upgrade only the original built-in composition. Customized panel
+    // references, ratios, gaps and directions retain their settings.
+    if let Some(preset) = self.presets.get_mut("browse_with_preview")
+      && let Some(split) = &mut preset.composition
+    {
+      let old_default = Composition {
+        ratio: [2, 3],
+        primary: PrimaryPanel::First,
+        first: LayoutReference::new("grid", &["3", "5"]),
+        second: LayoutReference::new("grid", &["1", "1"]),
+        ..Composition::default()
+      };
+      if *split == old_default {
+        split.second = LayoutReference::new("browse-preview", &[]);
+      }
+    }
     for (name, default_preset) in default_layout_presets() {
       match self.presets.get_mut(&name) {
         Some(preset) => preset.fill_missing_from(&default_preset),
@@ -429,6 +462,7 @@ impl LayoutConfig {
         .unwrap_or_else(|| self.card_style.clone()),
       show_filename: preset.show_filename.unwrap_or(self.show_filename),
       show_page_numbers: preset.show_page_numbers.unwrap_or(self.show_page_numbers),
+      highlight: preset.highlight.unwrap_or(self.highlight),
       scroll_divisor: preset.scroll_divisor.unwrap_or(self.scroll_divisor).max(1),
       filename_position: preset
         .filename_position
@@ -491,6 +525,32 @@ impl LayoutConfig {
 
 impl LayoutPresetConfig {
   fn fill_missing_from(&mut self, default: &LayoutPresetConfig) {
+    if self.strategy.is_empty() {
+      self.strategy.clone_from(&default.strategy);
+    }
+    if self.strategy == default.strategy {
+      if self.composition.is_none() {
+        self.composition.clone_from(&default.composition);
+      }
+      if self.params.is_empty() {
+        self.params.clone_from(&default.params);
+      }
+      if self.columns == 0 {
+        self.columns = default.columns;
+      }
+      if self.rows == 0 {
+        self.rows = default.rows;
+      }
+    }
+    if self.show_page_numbers.is_none() {
+      self.show_page_numbers = default.show_page_numbers;
+    }
+    if self.items == 0 {
+      self.items = default.items;
+    }
+    if self.scroll_divisor.is_none() {
+      self.scroll_divisor = default.scroll_divisor;
+    }
     if self.gap_x.is_none() {
       self.gap_x = default.gap_x;
     }
@@ -514,6 +574,9 @@ impl LayoutPresetConfig {
     }
     if self.label_lines.is_none() {
       self.label_lines = default.label_lines;
+    }
+    if self.highlight.is_none() {
+      self.highlight = default.highlight;
     }
     if self.show_border.is_none() {
       self.show_border = default.show_border;
@@ -542,6 +605,7 @@ fn default_effective_layout(config: &LayoutConfig) -> EffectiveLayoutConfig {
     card_style: config.card_style.clone(),
     show_filename: config.show_filename,
     show_page_numbers: config.show_page_numbers,
+    highlight: config.highlight,
     scroll_divisor: config.scroll_divisor.max(1),
     filename_position: config.filename_position.clone(),
     image_alignment: config.image_alignment.clone(),
@@ -593,7 +657,7 @@ type StringPair = (String, String);
 
 fn normalize_layout_strategy(strategy: &str) -> String {
   match strategy.trim().to_ascii_lowercase().as_str() {
-    "fixed_grid" | "fixed-grid" | "grid" => "grid".to_string(),
+    "fixed_grid" | "fixed-grid" | "" | "grid" => "grid".to_string(),
     "list" => "list".to_string(),
     "masonry" | "dense" => "masonry".to_string(),
     other => other.to_string(),
@@ -602,6 +666,10 @@ fn normalize_layout_strategy(strategy: &str) -> String {
 
 fn normalize_effective_layout(layout: &mut EffectiveLayoutConfig) {
   layout.strategy = normalize_layout_strategy(&layout.strategy);
+  layout.columns = layout.columns.clamp(1, 64);
+  layout.rows = layout.rows.clamp(1, 64);
+  layout.items = layout.items.clamp(1, 64);
+  layout.scroll_divisor = layout.scroll_divisor.clamp(1, 64);
   layout.left_ratio = layout.left_ratio.max(1);
   layout.right_ratio = layout.right_ratio.max(1);
   if layout.strategy == "slides" {
@@ -626,7 +694,11 @@ fn normalize_effective_layout(layout: &mut EffectiveLayoutConfig) {
     "center" | "middle" => "center".to_string(),
     _ => "center".to_string(),
   };
-  layout.image_ratio = layout.image_ratio.clamp(0.1, 0.95);
+  layout.image_ratio = if layout.image_ratio.is_finite() {
+    layout.image_ratio.clamp(0.1, 0.95)
+  } else {
+    default_image_ratio()
+  };
 }
 
 fn apply_layout_param(
@@ -641,6 +713,7 @@ fn apply_layout_param(
     "right_ratio" | "right-ratio" | "second_ratio" => {
       layout.right_ratio = parse_layout_ratio(param, value)?
     }
+    "highlight" => layout.highlight = parse_layout_bool(param, value)?,
     "show_page_numbers" => layout.show_page_numbers = parse_layout_bool(param, value)?,
     "scroll_divisor" => layout.scroll_divisor = parse_layout_ratio(param, value)?,
     "columns" | "column" | "cols" => layout.columns = parse_layout_u16(param, value)?,
@@ -682,9 +755,27 @@ fn apply_layout_param(
 }
 
 fn parse_layout_u16(param: &str, value: &str) -> Result<u16, String> {
-  value
+  let number = value
     .parse::<u16>()
-    .map_err(|_| format!("{param} must be a non-negative integer"))
+    .map_err(|_| format!("{param} must be a non-negative integer"))?;
+  if matches!(
+    param,
+    "columns"
+      | "column"
+      | "cols"
+      | "rows"
+      | "row"
+      | "items"
+      | "item"
+      | "page_size"
+      | "page-size"
+      | "per_page"
+      | "per-page"
+  ) && !(1..=64).contains(&number)
+  {
+    return Err(format!("{param} must be between 1 and 64"));
+  }
+  Ok(number)
 }
 
 fn parse_layout_bool(param: &str, value: &str) -> Result<bool, String> {
@@ -698,7 +789,9 @@ fn parse_layout_bool(param: &str, value: &str) -> Result<bool, String> {
 fn parse_layout_f32(param: &str, value: &str) -> Result<f32, String> {
   value
     .parse::<f32>()
-    .map_err(|_| format!("{param} must be a number"))
+    .ok()
+    .filter(|n| n.is_finite())
+    .ok_or_else(|| format!("{param} must be a finite number"))
 }
 
 fn is_param(value: &str, aliases: &[&str]) -> bool {

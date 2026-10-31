@@ -172,81 +172,62 @@ is the canonical disk budget; `cache_max_bytes` remains a read alias.
 
 ## Composite layouts
 
-A composite references two ordinary presets. Their rendering, spacing, labels,
-and caches remain independent. The composition controls only the split and
-synchronization:
+A composite owns two inline child panels. They are not named presets and do not
+appear in layout completion. Each panel specifies its ordinary layout strategy
+and optional styling directly; unset styling inherits the global layout settings.
 
 ```toml
-[layout.presets.review]
+[layout.presets.slides]
 strategy = "composite"
 params = ["first_ratio", "second_ratio"]
 
-[layout.presets.review.composition]
+[layout.presets.slides.composition]
 direction = "horizontal"
-ratio = [1, 5]
+ratio = [1, 3]
 gap = 1
 primary = "second"
 
-[layout.presets.review.composition.first]
-layout = "slides-sidebar"
-args = []
+[layout.presets.slides.composition.first]
+strategy = "masonry"
+columns = 1
+scroll_divisor = 8
+show_page_numbers = true
+show_border = false
+padding = 0
 
-[layout.presets.review.composition.second]
-layout = "slides-main"
-args = []
+[layout.presets.slides.composition.second]
+strategy = "grid"
+columns = 1
+rows = 1
+highlight = false
+show_filename = false
+show_page_numbers = false
+show_border = false
+padding = 0
 ```
 
-Use `:layout-use review` to try it, or `:layout review` to save the selection.
-`:layout-use review 2 3` overrides the ratio. `horizontal` means left/right;
-`vertical` means top/bottom. `gap` is measured in terminal cells on the split
-axis and may be zero. The ratio applies after subtracting the gap.
-`primary = "first"` or `"second"` chooses the panel controlled by keys and the
-wheel. The other panel follows its reading position, centered as closely as
-its layout and document edges allow. Clicking a follower item navigates the
-primary. Each reference's `args` uses that preset's normal argument order.
-Nested compositions are rejected.
+Use `:layout slides` to activate this preset, or `:layout slides 1 5` to override
+the panel ratio. `horizontal` means left/right; `vertical` means top/bottom.
+The gap is measured in terminal cells and excluded before splitting the space.
+`primary` selects the panel controlled by keyboard and wheel; the other follows
+its reading position. Clicking the follower navigates the primary panel.
+Nested compositions and runtime preset references are not supported.
 
-The built-in `slides` is this mechanism's preset, using `slides-sidebar` and
-`slides-main`. Configure these **leaf presets** to change highlighting, borders, labels, or
-image layout; configure `layout.presets.slides.composition` to change the
-split. Old `strategy = "slides"` presets remain accepted as compatibility
-aliases, but new presets should use `strategy = "composite"`.
+`config::migration` upgrades legacy `strategy = "slides"`, ratio parameters,
+and `composition.first/second` preset references before loading the current
+schema. References and their arguments are expanded into child settings,
+preserving custom panel styles. Obsolete built-in helper presets are removed
+unless explicitly selected as the startup layout. Other user presets remain.
+The original configuration is backed up as `config.toml.bak.*` before validated
+changes are saved atomically. Repeated loads do not migrate the file again.
 
-`show_page_numbers = true` works globally under `[layout]` or as a leaf-preset
-override. It reserves one line above each item and works without borders.
-The built-in sidebar is one-column `masonry`; the main panel is a `1 × 1`
-`grid`. Following uses the focused image index and fractional visible position
-inside its card. Grid/list panels always retain fixed-height, whole-image rows;
-composition never turns them into sliced layouts. A masonry leaf can override
-`scroll_divisor` (default 8); slicing and preloading use that panel's own height.
-Follower preloading predicts the primary's navigation path before mapping each
-predicted position to follower slices.
+`browse_with_preview` uses the same mechanism: `first` is an inline `grid` with
+`columns = 3`, `rows = 5`; `second` is a `grid` with `columns = 1`, `rows = 1`
+and `highlight = false`. The ratio is `[2, 3]`, the gap is 1 and the primary
+panel is `first`. Activate it with `. b`.
 
-The built-in `browse_with_preview` is another `composite` preset: `first`
-references `grid` with `args = ["3", "5"]`, `second` references the `browse-preview`
-preset (`grid`, one column and one row), and its split uses `ratio = [2, 3]`, `gap = 1`, and
-`primary = "first"`. Activate it with `. b` or `:layout browse_with_preview`.
-The two leaf presets can be styled independently.
-
-`highlight` defaults to `true` under `[layout]`. An ordinary preset can override
-it; a composition uses the setting on each referenced leaf preset. The built-in
-`slides-main` and `browse-preview` explicitly default to `false`. A single-image
-grid is otherwise treated like any other grid: there is no automatic disabling.
-For example, edit these existing tables in `config.toml`:
-
-```toml
-[layout.presets.slides-main]
-highlight = true
-
-[layout.presets.browse-preview]
-highlight = false
-
-[layout.presets.grid]
-highlight = false
-```
-
-Disabling highlighting suppresses focus/selection colors and the focused page
-number marker; navigation and the selected-image set are unchanged. Add
-`"highlight"` to a custom preset's `params` to accept it as a `:layout` argument.
-Existing unmodified `browse_with_preview` compositions are upgraded to reference
-`browse-preview`; customized compositions keep their panel references.
+To style a preview, edit `[layout.presets.slides.composition.second]` or
+`[layout.presets.browse_with_preview.composition.second]`. `highlight` defaults
+to true globally, while these built-in preview panels set it to false.
+Grid/list child panels keep fixed-height, whole-image rows; masonry uses its
+own panel height and `scroll_divisor` for slicing and preload.

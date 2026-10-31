@@ -39,7 +39,7 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
       Some("Show a one-based item number above each page/image; independent of borders.")
     }
     "layout.presets.*.composition" => {
-      Some("Combine two ordinary layout presets; each keeps its own geometry and cache sizes.")
+      Some("Define two inline child panels; each keeps its own layout, styling and cache sizes.")
     }
     "layout.presets.*.composition.direction" => {
       Some("horizontal: left/right; vertical: top/bottom.")
@@ -53,11 +53,8 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
     "layout.presets.*.composition.primary" => {
       Some("first or second: keyboard/wheel control this panel; the other follows its progress.")
     }
-    "layout.presets.*.composition.first.layout" | "layout.presets.*.composition.second.layout" => {
-      Some("Name of an ordinary layout preset; nested compositions are not supported.")
-    }
-    "layout.presets.*.composition.first.args" | "layout.presets.*.composition.second.args" => {
-      Some("Arguments for the referenced preset, in that preset's params order.")
+    "layout.presets.*.composition.first" | "layout.presets.*.composition.second" => {
+      Some("Inline child panel settings; not a separately selectable layout preset.")
     }
 
     "recursive" => Some("Scan image files in subdirectories as well as the current directory."),
@@ -97,12 +94,6 @@ fn gallery_config_comment(key: &str) -> Option<&'static str> {
     ),
     "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
     "layout.presets.*.columns" => Some("Default column count for grid and masonry layouts."),
-    "layout.presets.*.left_ratio" => {
-      Some("Left thumbnail panel width weight for slides (positive integer).")
-    }
-    "layout.presets.*.right_ratio" => {
-      Some("Right preview panel width weight for slides (positive integer).")
-    }
     "layout.presets.*.rows" => Some("Default row count for fixed grid layouts."),
     "layout.presets.*.items" => Some("Default item count for list layouts."),
     "layout.presets.*.card_width" => Some("Card width in cells for masonry layouts."),

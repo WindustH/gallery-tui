@@ -77,7 +77,7 @@ Switches to a layout preset and saves the choice, with its arguments, to
 
 The default presets take these arguments:
 
-- `slides <left_ratio> <right_ratio>`: thumbnails on the left and a large preview
+- `slides <first_ratio> <second_ratio>`: thumbnails on the left and a large preview
   on the right, with positive integer width weights (default `1 3`).
 - `grid <columns> <rows>`: a fixed grid whose cards fill the screen. `3x3` is
   shorthand for `3 3`.

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use framework_tui::layout::{Composition, LayoutReference, PrimaryPanel, ResolvedComposition};
+use framework_tui::layout::{Composition, PrimaryPanel, ResolvedComposition};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,17 +66,15 @@ impl Default for LayoutConfig {
   }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct LayoutPresetConfig {
-  pub composition: Option<Composition>,
+  pub composition: Option<Composition<Box<LayoutPresetConfig>>>,
   pub scroll_divisor: Option<u16>,
   pub show_page_numbers: Option<bool>,
   pub highlight: Option<bool>,
   #[serde(default = "default_layout_strategy")]
   pub strategy: String,
-  pub left_ratio: u16,
-  pub right_ratio: u16,
   pub params: Vec<String>,
   pub columns: u16,
   pub rows: u16,
@@ -102,7 +100,7 @@ impl LayoutPresetConfig {
     Self {
       strategy: "composite".into(),
       composition: Some(slides_composition()),
-      params: vec!["left_ratio".into(), "right_ratio".into()],
+      params: vec!["first_ratio".into(), "second_ratio".into()],
       ..Self::default()
     }
   }
@@ -164,8 +162,6 @@ impl Default for LayoutPresetConfig {
       show_page_numbers: None,
       highlight: None,
       strategy: default_layout_strategy(),
-      left_ratio: 1,
-      right_ratio: 3,
       params: Vec::new(),
       columns: 0,
       rows: 0,
@@ -257,43 +253,18 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
       composition: Some(Composition {
         ratio: [2, 3],
         primary: PrimaryPanel::First,
-        first: LayoutReference::new("grid", &["3", "5"]),
-        second: LayoutReference::new("browse-preview", &[]),
+        first: Box::new(LayoutPresetConfig {
+          columns: 3,
+          rows: 5,
+          ..LayoutPresetConfig::grid()
+        }),
+        second: Box::new(browse_preview()),
         ..Composition::default()
       }),
       ..LayoutPresetConfig::default()
     },
   );
-  presets.insert(
-    "slides-sidebar".into(),
-    LayoutPresetConfig {
-      columns: 1,
-      show_page_numbers: Some(true),
-      padding: Some(0),
-      gap_y: Some(1),
-      ..LayoutPresetConfig::masonry()
-    },
-  );
-  presets.insert(
-    "slides-main".into(),
-    LayoutPresetConfig {
-      columns: 1,
-      rows: 1,
-      padding: Some(0),
-      show_filename: Some(false),
-      highlight: Some(false),
-      ..LayoutPresetConfig::grid()
-    },
-  );
-  presets.insert(
-    "browse-preview".into(),
-    LayoutPresetConfig {
-      columns: 1,
-      rows: 1,
-      highlight: Some(false),
-      ..LayoutPresetConfig::grid()
-    },
-  );
+
   presets.insert("grid".to_string(), LayoutPresetConfig::grid());
   presets.insert("list".to_string(), LayoutPresetConfig::list());
   presets.insert("masonry".to_string(), LayoutPresetConfig::masonry());
@@ -303,11 +274,11 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveLayoutConfig {
   pub scroll_divisor: u16,
-  pub composition: Option<Box<ResolvedComposition<EffectiveLayoutConfig>>>,
+  pub composition: Option<Box<ResolvedComposition<EffectiveLayoutConfig, Box<LayoutPresetConfig>>>>,
   pub name: String,
   pub strategy: String,
-  pub left_ratio: u16,
-  pub right_ratio: u16,
+  pub first_ratio: u16,
+  pub second_ratio: u16,
   pub columns: u16,
   pub rows: u16,
   pub items: u16,
@@ -337,7 +308,6 @@ impl EffectiveLayoutConfig {
       );
     }
     match self.strategy.as_str() {
-      "slides" => format!("{} {}:{}", self.name, self.left_ratio, self.right_ratio),
       "grid" | "fixed_grid" => {
         format!("{} {}x{}", self.name, self.columns.max(1), self.rows.max(1))
       }
@@ -357,22 +327,6 @@ impl EffectiveLayoutConfig {
 impl LayoutConfig {
   /// Add built-in presets missing from the file and fill their unset fields.
   pub(super) fn normalize_defaults(&mut self) {
-    // Upgrade only the original built-in composition. Customized panel
-    // references, ratios, gaps and directions retain their settings.
-    if let Some(preset) = self.presets.get_mut("browse_with_preview")
-      && let Some(split) = &mut preset.composition
-    {
-      let old_default = Composition {
-        ratio: [2, 3],
-        primary: PrimaryPanel::First,
-        first: LayoutReference::new("grid", &["3", "5"]),
-        second: LayoutReference::new("grid", &["1", "1"]),
-        ..Composition::default()
-      };
-      if *split == old_default {
-        split.second = LayoutReference::new("browse-preview", &[]);
-      }
-    }
     for (name, default_preset) in default_layout_presets() {
       match self.presets.get_mut(&name) {
         Some(preset) => preset.fill_missing_from(&default_preset),
@@ -426,19 +380,23 @@ impl LayoutConfig {
     raw_args: &[String],
     ancestors: &[String],
   ) -> Result<EffectiveLayoutConfig, String> {
-    if ancestors.iter().any(|parent| parent == name) {
-      return Err(format!("cyclic layout reference: {name}"));
-    }
-    if ancestors.len() > 1 {
-      return Err(
-        "a composition must contain two ordinary layouts, not nested compositions".into(),
-      );
-    }
-
     let preset = self
       .presets
       .get(name)
       .ok_or_else(|| format!("unknown layout: {name}"))?;
+    self.resolve_panel(name, preset, raw_args, ancestors)
+  }
+
+  fn resolve_panel(
+    &self,
+    name: &str,
+    preset: &LayoutPresetConfig,
+    raw_args: &[String],
+    ancestors: &[String],
+  ) -> Result<EffectiveLayoutConfig, String> {
+    if !ancestors.is_empty() && (preset.composition.is_some() || preset.strategy == "composite") {
+      return Err("nested compositions are not supported".into());
+    }
     if raw_args.len() > preset.params.len() {
       return Err(layout_usage(name, preset));
     }
@@ -447,8 +405,14 @@ impl LayoutConfig {
       composition: None,
       name: name.to_string(),
       strategy: normalize_layout_strategy(&preset.strategy),
-      left_ratio: preset.left_ratio,
-      right_ratio: preset.right_ratio,
+      first_ratio: preset
+        .composition
+        .as_ref()
+        .map_or(1, |split| split.ratio[0]),
+      second_ratio: preset
+        .composition
+        .as_ref()
+        .map_or(3, |split| split.ratio[1]),
       columns: preset.columns,
       rows: preset.rows,
       items: preset.items,
@@ -485,32 +449,27 @@ impl LayoutConfig {
     normalize_effective_layout(&mut effective);
     if !matches!(
       effective.strategy.as_str(),
-      "grid" | "list" | "masonry" | "composite" | "slides"
+      "grid" | "list" | "masonry" | "composite"
     ) {
       return Err(format!("unknown layout strategy: {}", effective.strategy));
     }
-    if matches!(effective.strategy.as_str(), "composite" | "slides") {
+    if effective.strategy == "composite" {
       let mut split = preset
         .composition
         .clone()
-        .or_else(|| (effective.strategy == "slides").then(slides_composition))
         .ok_or_else(|| "composite layout requires a composition table".to_string())?;
-      if preset.composition.is_none() && effective.strategy == "slides" {
-        split.ratio = [effective.left_ratio, effective.right_ratio];
-        split.gap = preset.gap_x.unwrap_or(1).max(1);
-      }
       for (param, _) in preset.params.iter().zip(raw_args) {
         match param.trim().to_ascii_lowercase().as_str() {
-          "left_ratio" | "left-ratio" | "first_ratio" => split.ratio[0] = effective.left_ratio,
-          "right_ratio" | "right-ratio" | "second_ratio" => split.ratio[1] = effective.right_ratio,
+          "first_ratio" => split.ratio[0] = effective.first_ratio,
+          "second_ratio" => split.ratio[1] = effective.second_ratio,
           _ => {}
         }
       }
       split.validate()?;
       let mut ancestors = ancestors.to_vec();
       ancestors.push(name.into());
-      let first = self.resolve(&split.first.layout, &split.first.args, &ancestors)?;
-      let second = self.resolve(&split.second.layout, &split.second.args, &ancestors)?;
+      let first = self.resolve_panel(&format!("{name}.first"), &split.first, &[], &ancestors)?;
+      let second = self.resolve_panel(&format!("{name}.second"), &split.second, &[], &ancestors)?;
       if first.composition.is_some() || second.composition.is_some() {
         return Err("nested compositions are not supported".into());
       }
@@ -531,6 +490,10 @@ impl LayoutPresetConfig {
     if self.strategy == default.strategy {
       if self.composition.is_none() {
         self.composition.clone_from(&default.composition);
+      }
+      if let (Some(split), Some(default_split)) = (&mut self.composition, &default.composition) {
+        split.first.fill_missing_from(&default_split.first);
+        split.second.fill_missing_from(&default_split.second);
       }
       if self.params.is_empty() {
         self.params.clone_from(&default.params);
@@ -593,8 +556,8 @@ fn default_effective_layout(config: &LayoutConfig) -> EffectiveLayoutConfig {
     composition: None,
     name: "grid".to_string(),
     strategy: fallback.strategy,
-    left_ratio: fallback.left_ratio,
-    right_ratio: fallback.right_ratio,
+    first_ratio: 1,
+    second_ratio: 3,
     columns: fallback.columns,
     rows: fallback.rows,
     items: fallback.items,
@@ -670,12 +633,8 @@ fn normalize_effective_layout(layout: &mut EffectiveLayoutConfig) {
   layout.rows = layout.rows.clamp(1, 64);
   layout.items = layout.items.clamp(1, 64);
   layout.scroll_divisor = layout.scroll_divisor.clamp(1, 64);
-  layout.left_ratio = layout.left_ratio.max(1);
-  layout.right_ratio = layout.right_ratio.max(1);
-  if layout.strategy == "slides" {
-    layout.columns = 1;
-    layout.rows = 1;
-  }
+  layout.first_ratio = layout.first_ratio.max(1);
+  layout.second_ratio = layout.second_ratio.max(1);
   if layout.strategy == "grid" {
     layout.columns = layout.columns.max(1);
     layout.rows = layout.rows.max(1);
@@ -707,12 +666,8 @@ fn apply_layout_param(
   value: &str,
 ) -> Result<(), String> {
   match param.trim().to_ascii_lowercase().as_str() {
-    "left_ratio" | "left-ratio" | "first_ratio" => {
-      layout.left_ratio = parse_layout_ratio(param, value)?
-    }
-    "right_ratio" | "right-ratio" | "second_ratio" => {
-      layout.right_ratio = parse_layout_ratio(param, value)?
-    }
+    "first_ratio" => layout.first_ratio = parse_layout_ratio(param, value)?,
+    "second_ratio" => layout.second_ratio = parse_layout_ratio(param, value)?,
     "highlight" => layout.highlight = parse_layout_bool(param, value)?,
     "show_page_numbers" => layout.show_page_numbers = parse_layout_bool(param, value)?,
     "scroll_divisor" => layout.scroll_divisor = parse_layout_ratio(param, value)?,
@@ -825,10 +780,40 @@ fn default_scroll_divisor() -> u16 {
   8
 }
 
-fn slides_composition() -> Composition {
+fn slides_composition() -> Composition<Box<LayoutPresetConfig>> {
   Composition {
-    first: LayoutReference::new("slides-sidebar", &[]),
-    second: LayoutReference::new("slides-main", &[]),
+    first: Box::new(slides_sidebar()),
+    second: Box::new(slides_main()),
     ..Composition::default()
+  }
+}
+
+fn slides_sidebar() -> LayoutPresetConfig {
+  LayoutPresetConfig {
+    columns: 1,
+    show_page_numbers: Some(true),
+    padding: Some(0),
+    gap_y: Some(1),
+    ..LayoutPresetConfig::masonry()
+  }
+}
+
+fn slides_main() -> LayoutPresetConfig {
+  LayoutPresetConfig {
+    columns: 1,
+    rows: 1,
+    padding: Some(0),
+    show_filename: Some(false),
+    highlight: Some(false),
+    ..LayoutPresetConfig::grid()
+  }
+}
+
+fn browse_preview() -> LayoutPresetConfig {
+  LayoutPresetConfig {
+    columns: 1,
+    rows: 1,
+    highlight: Some(false),
+    ..LayoutPresetConfig::grid()
   }
 }

@@ -4,6 +4,7 @@ mod comments;
 mod file;
 mod keymap;
 mod layout;
+mod migration;
 mod render;
 mod theme;
 
@@ -110,6 +111,7 @@ pub async fn load_or_create() -> Result<Settings> {
     .with_context(|| format!("failed to create {}", cache_dir.display()))?;
 
   let config_path = config_dir.join("config.toml");
+  migration::run(&config_path).await?;
   let config = file::load_or_create(&config_path, AppConfig::default()).await?;
   let keymap =
     file::load_or_create(&config_dir.join("keymap.toml"), KeymapConfig::default()).await?;
